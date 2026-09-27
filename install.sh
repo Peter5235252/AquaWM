@@ -498,10 +498,10 @@ if [ "$MODE" = "all" ] || [ "$MODE" = "build" ]; then
 aquawm is ready: $DEST/result/bin/aquawm
   Develop: nix develop            (shell with every build dependency)
   Rebuild: nix build              (tests run as part of the build)
-  Config:  ~/.config/aquawm/aquawm.lua   (Alt+Shift+R reloads it live)
+  Config:  ~/.config/aquawm/aquawm.lua   (Super+Shift+R reloads it live)
 
-Keybindings: Alt+Return terminal | Alt+J/K focus | Alt+Space float |
-  Alt+1..4 workspaces | Alt+Shift+1..4 move | Alt+Q close | Alt+M quit
+Keybindings: Super+Return terminal | Super+J/K focus | Super+T float |
+  Super+1..4 workspaces | Super+Shift+1..4 move | Super+Q close | Super+M quit
 
 Notes: launch from a TTY (Ctrl+Alt+F3) so the DRM backend is picked; a
 normal TTY login provides the needed session permissions. This NixOS
@@ -515,10 +515,10 @@ aquawm is ready: $BIN
   Run it:  ./run-wslg.sh          (inside WSLg: X11 backend, maximize freely)
            ./build/aquawm         (bare metal TTY or nested Wayland session)
   Test:    WAYLAND_DISPLAY=wayland-N kitty
-  Config:  ~/.config/aquawm/aquawm.lua   (Alt+Shift+R reloads it live)
+  Config:  ~/.config/aquawm/aquawm.lua   (Super+Shift+R reloads it live)
 
-Keybindings: Alt+Return terminal | Alt+J/K focus | Alt+Space float |
-  Alt+1..4 workspaces | Alt+Shift+1..4 move | Alt+Q close | Alt+M quit
+Keybindings: Super+Return terminal | Super+J/K focus | Super+T float |
+  Super+1..4 workspaces | Super+Shift+1..4 move | Super+Q close | Super+M quit
 
 Notes: on bare metal, launch from a TTY (Ctrl+Alt+F3) so the DRM backend
 is picked; a normal TTY login provides the needed session permissions.

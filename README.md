@@ -122,7 +122,7 @@ existing Wayland/X11 session works exactly like under WSLg.
    `./build/aquawm` for non-Nix builds.
 3. Checklist, in the order things usually bite:
     - `kitty` installed (system package, or `nix profile install
-      nixpkgs#kitty`) — without it, `Alt+Return` silently does nothing
+      nixpkgs#kitty`) — without it, `Super+Return` silently does nothing
       and the desktop looks dead.
    - Active logind session — a normal TTY login provides it; check with
      `loginctl` if input or DRM permission is denied.
@@ -130,7 +130,7 @@ existing Wayland/X11 session works exactly like under WSLg.
      already works.
    - `~/.config/aquawm/aquawm.lua` present — the installer deploys the
      example; without it you get built-in defaults.
-4. Quit with `Alt+M`. If the screen ever locks up, `Ctrl+Alt+F1/F2`
+4. Quit with `Super+M`. If the screen ever locks up, `Ctrl+Alt+F1/F2`
    jumps back to your other session; aquawm releases the display on
    VT switch.
 
@@ -204,7 +204,7 @@ directly so backend autocreate can pick Wayland or DRM.
 
  tips:
 - Maximize the aquawm window (`Win+Up`) and open clients *inside* it with
-  `Alt+Return`; host-side terminals stay outside and only add clutter.
+  `Super+Return`; host-side terminals stay outside and only add clutter.
 - Optionally move it to its own Windows virtual desktop (`Win+Tab` -> New
   desktop, drag it over, `Win+Ctrl+Left/Right` to flip).
 
@@ -216,18 +216,21 @@ WAYLAND_DISPLAY=wayland-1 kitty
 
 ## Keybindings (Phase 2)
 
-| Keys                | Action                        |
-|---------------------|-------------------------------|
-| `Alt+Return`        | spawn terminal (`kitty`)      |
-| `Alt+J` / `Alt+K`   | focus next / previous window  |
-| `Alt+Space`         | toggle floating on focused    |
-| `Alt+1` … `Alt+4`   | switch workspace              |
-| `Alt+Shift+1` … `4` | move focused window + refocus |
-| `Alt+Q`             | close focused window          |
-| `Alt+M`             | quit to login manager         |
-| click               | focus window                  |
-| `Alt+Left-drag`     | move window (floats it first) |
-| `Alt+Right-drag`    | resize window (floats it first) |
+| Keys                  | Action                        |
+|-----------------------|-------------------------------|
+| `Super+Return`        | spawn terminal (`kitty`)      |
+| `Super+J` / `Super+K` | focus next / previous window  |
+| `Super+T`             | toggle floating on focused    |
+| `Super+1` … `Super+4` | switch workspace              |
+| `Super+Shift+1` … `4` | move focused window + refocus |
+| `Super+Q`             | close focused window          |
+| `Super+M`             | quit to login manager         |
+| click                 | focus window                  |
+| `Super+Left-drag`     | move window (floats it first) |
+| `Super+Right-drag`    | resize window (floats it first) |
+
+The focused window gets a blue border; it tracks moves, resizes and
+workspace switches, and shows on floating and fullscreen windows too.
 
 ## Configuration (Phase 3a)
 
@@ -240,9 +243,9 @@ $EDITOR ~/.config/aquawm/aquawm.lua
 ```
 
 The file sets `config = { gaps, mfact, nmaster, workspaces }` and
-registers keys with `bind("Alt", "m", "quit")` (modifiers Alt, Ctrl,
+registers keys with `bind("Super", "m", "quit")` (modifiers Alt, Ctrl,
 Shift, Super; key names are xkb keysyms; workspace actions take a 1-based
-number). Apply changes with `Alt+Shift+R`, with `kill -HUP <aquawm-pid>`,
+number). Apply changes with `Super+Shift+R`, with `kill -HUP <aquawm-pid>`,
 or by restarting. A custom path works too: `aquawm /path/to/aquawm.lua`.
 Missing or broken files fall back to built-in defaults with a log line.
 
@@ -250,7 +253,7 @@ Missing or broken files fall back to built-in defaults with a log line.
 
 `config = { wallpaper = "/path/to/image.jpg" }` (PNG or JPEG) sets the
 background, cover-fit per output behind all windows; empty means
-`~/.config/aquawm/wallpaper.jpg`. Changing it and reloading (`Alt+Shift+R`
+`~/.config/aquawm/wallpaper.jpg`. Changing it and reloading (`Super+Shift+R`
 or `SIGHUP`) swaps it live. The shipped `assets/wallpaper.jpg` is the
 default - copy it next to your `aquawm.lua`.
 
@@ -264,7 +267,7 @@ AquaWM: using built-in defaults - edit /home/you/.config/aquawm/aquawm.lua to co
 ```
 
 The strip reserves space, so tiling never covers it. It disappears on its
-own once a valid config loads (`Alt+Shift+R` reloads live). To keep
+own once a valid config loads (`Super+Shift+R` reloads live). To keep
 running on defaults without the strip:
 
 ```
@@ -276,7 +279,7 @@ config = {
 
 ## Terminal (kitty)
 
-AquaWM spawns `kitty` on `Alt+Return` (falling back to `foot`, then
+AquaWM spawns `kitty` on `Super+Return` (falling back to `foot`, then
 `weston-terminal`). Example config:
 
 ```

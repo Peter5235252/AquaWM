@@ -1,5 +1,5 @@
 -- aquawm example config: copy to ~/.config/aquawm/aquawm.lua and tweak.
--- Reload a running compositor with Alt+Shift+R (or SIGHUP).
+-- Reload a running compositor with Super+Shift+R (or SIGHUP).
 -- Key names follow xkb keysyms ("Return", "space", "q", "1" ...).
 -- Modifiers: Alt, Ctrl, Shift, Super (Logo/Win/Mod4 also work).
 
@@ -12,15 +12,15 @@ config = {
     -- wallpaper = os.getenv("HOME") .. "/.config/aquawm/wallpaper.jpg",
 }
 
-bind("Alt", "Return", "spawn-terminal")
-bind("Alt", "j", "focus-next")
-bind("Alt", "k", "focus-prev")
-bind("Alt", "space", "toggle-floating")
-bind("Alt", "q", "close")
-bind("Alt", "m", "quit") -- back to the login manager (the only quit bind)
-bind("Alt+Shift", "r", "reload-config")
+bind("Super", "Return", "spawn-terminal")
+bind("Super", "j", "focus-next")
+bind("Super", "k", "focus-prev")
+bind("Super", "t", "toggle-floating")
+bind("Super", "q", "close")
+bind("Super", "m", "quit") -- back to the login manager (the only quit bind)
+bind("Super+Shift", "r", "reload-config")
 
 for i = 1, 4 do
-    bind("Alt", tostring(i), "workspace", i)
-    bind("Alt+Shift", tostring(i), "move-to-workspace", i)
+    bind("Super", tostring(i), "workspace", i)
+    bind("Super+Shift", tostring(i), "move-to-workspace", i)
 end

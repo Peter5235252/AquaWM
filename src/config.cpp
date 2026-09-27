@@ -4,16 +4,16 @@
 //
 //   config = { gaps = 8, mfact = 0.6, nmaster = 1, workspaces = 4 }
 //
-//   bind("Alt", "Return", "spawn-terminal")
-//   bind("Alt", "j", "focus-next")
-//   bind("Alt", "k", "focus-prev")
-//   bind("Alt", "space", "toggle-floating")
-//   bind("Alt", "q", "close")
-//   bind("Alt", "m", "quit")
-//   bind("Alt+Shift", "r", "reload-config")
+//   bind("Super", "Return", "spawn-terminal")
+//   bind("Super", "j", "focus-next")
+//   bind("Super", "k", "focus-prev")
+//   bind("Ctrl", "t", "toggle-floating")
+//   bind("Super", "q", "close")
+//   bind("Super", "m", "quit")
+//   bind("Super+Shift", "r", "reload-config")
 //   for i = 1, 4 do
-//       bind("Alt", tostring(i), "workspace", i)
-//       bind("Alt+Shift", tostring(i), "move-to-workspace", i)
+//       bind("Super", tostring(i), "workspace", i)
+//       bind("Super+Shift", tostring(i), "move-to-workspace", i)
 //   end
 //
 // Actions: spawn-terminal, close, quit, focus-next, focus-prev,
@@ -168,17 +168,17 @@ Config default_config() {
                                      key, XKB_KEYSYM_CASE_INSENSITIVE),
                                  action, arg});
     };
-    add("Alt", "Return", "spawn-terminal");
-    add("Alt", "j", "focus-next");
-    add("Alt", "k", "focus-prev");
-    add("Alt", "space", "toggle-floating");
-    add("Alt", "q", "close");
-    add("Alt", "m", "quit"); // back to the login manager (the only quit bind)
-    add("Alt+Shift", "r", "reload-config");
+    add("Super", "Return", "spawn-terminal");
+    add("Super", "j", "focus-next");
+    add("Super", "k", "focus-prev");
+    add("Super", "t", "toggle-floating");
+    add("Super", "q", "close");
+    add("Super", "m", "quit"); // back to the login manager (the only quit bind)
+    add("Super+Shift", "r", "reload-config");
     for (int i = 1; i <= 4; ++i) {
         char key[2] = {static_cast<char>('0' + i), '\0'};
-        add("Alt", key, "workspace", i);
-        add("Alt+Shift", key, "move-to-workspace", i);
+        add("Super", key, "workspace", i);
+        add("Super+Shift", key, "move-to-workspace", i);
     }
     (void)ok;
     return c;
