@@ -257,6 +257,7 @@ cp examples/foot.ini ~/.config/foot/foot.ini
 - Phase 3c (next): XWayland support for legacy X11 apps.
 - Installer (done): one-liner `setup.sh` plus `install.sh` for Arch
   and Fedora, with package manifests and a `--testmode` dry run.
+- Long-term (under consideration): once testing is solid and the core feature set is wrapped up, ditching wlroots and writing a new base from the ground up. No timeline on this, it's just on the table.
 
 ## Distro support, now and later
 
