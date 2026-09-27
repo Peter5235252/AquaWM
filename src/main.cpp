@@ -1348,8 +1348,32 @@ void cursor_process_position(Server *server, uint32_t time_msec) {
         }
         return;
     }
-    wlr_seat_pointer_notify_motion(server->seat, time_msec, server->cursor->x,
-        server->cursor->y);
+    // Focus-follows-mouse: enter the topmost tile under the cursor (with
+    // surface-local coordinates) so motion, buttons, axis and client-side
+    // decorations all reach the right client; leave when over nothing.
+    // Without this, clients never gain pointer focus and clicks, scrolling
+    // and CSD buttons silently go nowhere.
+    AnyView hit{};
+    struct wlr_surface *surface = nullptr;
+    double sx = 0.0, sy = 0.0;
+    if (tile_at(server, server->cursor->x, server->cursor->y, hit)) {
+        surface = any_surface(hit);
+        if (surface != nullptr) {
+            struct wlr_box box = any_box(hit);
+            sx = server->cursor->x - box.x;
+            sy = server->cursor->y - box.y;
+        }
+    }
+    if (surface != nullptr) {
+        wlr_seat_pointer_notify_enter(server->seat, surface, sx, sy);
+        wlr_seat_pointer_notify_motion(server->seat, time_msec, sx, sy);
+    } else {
+        if (server->seat->pointer_state.focused_surface != nullptr) {
+            wlr_seat_pointer_notify_clear_focus(server->seat);
+        }
+        wlr_seat_pointer_notify_motion(server->seat, time_msec,
+            server->cursor->x, server->cursor->y);
+    }
     if (server->seat->pointer_state.focused_surface == nullptr &&
         !server->cursor_is_default) {
         set_default_cursor(server);
