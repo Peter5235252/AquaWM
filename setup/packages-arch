@@ -14,5 +14,10 @@ libdrm
 lua
 libjpeg-turbo
 libpng
+libxcb
+xcb-util-wm
+xorg-xwayland
+xterm
+xorg-xeyes
 xdotool
 xwininfo

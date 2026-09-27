@@ -40,6 +40,8 @@
         pkgs.lua
         pkgs.libjpeg_turbo
         pkgs.libpng
+        pkgs.libxcb
+        pkgs.libxcb-wm # xcb-ewmh + xcb-icccm for wlr/xwayland.h
       ];
 
       aquawmSrc = {
@@ -72,6 +74,7 @@
               ninja
               pkg-config
               wayland-scanner
+              makeWrapper
             ];
 
             buildInputs = aquawmDeps pkgs;
@@ -80,12 +83,29 @@
             # `nix build` fails rather than shipping an untested binary.
             doCheck = true;
 
+            # Login managers run aquawm-session with a bare environment, so
+            # the wrapper must find its own binary without relying on PATH.
+            # Display managers also resolve TryExec at login time and reject
+            # the session when it does not resolve (seen as an empty session
+            # / freeze on Plasma Login Manager), so pin absolute store paths
+            # in the installed desktop file. FHS installs keep the bare
+            # names via CMake.
+            postInstall = ''
+              wrapProgram $out/bin/aquawm-session \
+                --prefix PATH : $out/bin
+              # NOTE: TryExec first — plain 'Exec=' is a substring of it.
+              substituteInPlace $out/share/wayland-sessions/aquawm.desktop \
+                --replace-fail 'TryExec=aquawm-session' "TryExec=$out/bin/aquawm-session" \
+                --replace-fail 'Exec=aquawm-session' "Exec=$out/bin/aquawm-session"
+            '';
+
             # Advertises share/wayland-sessions/aquawm.desktop to
             # services.displayManager.sessionPackages on NixOS.
             passthru.providedSessions = [ "aquawm" ];
 
             meta = with nixpkgs.lib; {
               description = "Minimal tiling Wayland compositor in C++ (wlroots 0.20, Lua config)";
+              license = licenses.mit;
               platforms = platforms.linux;
             };
           };
@@ -101,9 +121,12 @@
           default = pkgs.mkShell {
             inputsFrom = [ self.packages.${system}.default ];
             packages = with pkgs; [
-              foot
+              kitty
               wayland-utils
               waybar # Phase 3b manual test client (top bar + exclusive zone)
+              xwayland # Phase 3c: X server binary wlroots spawns on demand
+              xterm # Phase 3c manual test client
+              xeyes # Phase 3c manual test client
               gdb
             ];
             shellHook = ''
@@ -112,5 +135,35 @@
           };
         }
       );
+
+      # NixOS login-manager integration: registers the wayland-session file
+      # with services.displayManager.sessionPackages so AquaWM appears in
+      # SDDM, Plasma Login Manager, GDM, ly and tuigreet pickers.
+      # Usage in your system flake:
+      #   imports = [ aquawm.nixosModules.aquawm ];
+      #   programs.aquawm.enable = true;
+      # Optionally preselect it: services.displayManager.defaultSession = "aquawm";
+      nixosModules.aquawm =
+        { config, lib, pkgs, ... }:
+        let
+          cfg = config.programs.aquawm;
+        in
+        {
+          options.programs.aquawm = {
+            enable = lib.mkEnableOption "AquaWM tiling Wayland compositor (login-manager session)";
+
+            package = lib.mkOption {
+              type = lib.types.package;
+              default = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+              description = "AquaWM package providing bin/aquawm and the wayland-session file.";
+            };
+          };
+
+          config = lib.mkIf cfg.enable {
+            services.displayManager.sessionPackages = [ cfg.package ];
+          };
+        };
+
+      nixosModules.default = self.nixosModules.aquawm;
     };
 }

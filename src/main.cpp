@@ -1,11 +1,13 @@
-// aquawm - Phase 3b: Lua-configured master-stack tiling compositor with
-// layer-shell bar support.
+// aquawm - Phase 3c: Lua-configured master-stack tiling compositor with
+// layer-shell bar support and XWayland.
 // Settings (gaps, mfact, nmaster, workspaces) and all keybindings come from
 // ~/.config/aquawm/aquawm.lua (see examples/aquawm.lua), reloadable via
 // Alt+Shift+R or SIGHUP; built-in defaults apply when missing or broken.
 // Layer-shell clients (e.g. waybar) render in protocol order above/below
 // tiling views and reserve their exclusive zone, which tiling shrinks
 // around. Pointer/keyboard input still goes to tiling views only.
+// X11 windows run through lazy XWayland and join the same tiling,
+// workspace, focus, float and fullscreen flows as xdg-shell windows.
 // Pointer: click focuses, Alt+Left-drag moves (floating tiled windows
 // first), Alt+Right-drag resizes, with a default xcursor otherwise.
 //
@@ -13,10 +15,12 @@
 //   * backend autocreate (nested Wayland/X11 window under WSLg, DRM on real hw)
 //   * GLES2 renderer + allocator, scene-graph rendering with per-frame commit
 //   * single-layout output handling, software cursor with xcursor theme
-//   * xdg-shell toplevels arranged in a master-stack layout, click-to-focus,
-//     Alt+Return spawns a terminal, Alt+J/K cycles focus, Alt+Space toggles
-//     floating, Alt+1..4 switches between 4 workspaces, Alt+Shift+1..4 moves
-//     the focused window, Alt+Q closes, Alt+Shift+E quits.
+//   * xdg-shell and XWayland toplevels arranged in a master-stack layout,
+//     click-to-focus, Alt+Return spawns a terminal, Alt+J/K cycles focus,
+//     Alt+Space toggles floating, Alt+1..4 switches between 4 workspaces,
+//     Alt+Shift+1..4 moves the focused window, Alt+Q closes, Alt+M quits.
+//     Override-redirect X11 windows float; X11 fullscreen covers
+//     the usable area.
 //   * layer-shell bars with exclusive-zone tiling reserve.
 
 #include <cassert>
@@ -25,21 +29,26 @@
 #include <cstdlib>
 #include <ctime>
 #include <linux/input-event-codes.h>
+// pthread.h before the keyword hacks below: glibc declares a C++ cleanup
+// `class` in it, and it can otherwise be first-pulled by a header inside
+// the hack window (seen under -O3), where `class` is macro-renamed.
+#include <pthread.h>
 #include <unistd.h>
 #include <wayland-server-core.h>
 #include <xkbcommon/xkbcommon.h>
 
 // wlroots is a C library whose headers carry no `extern "C"` guards, so
 // force C linkage here. They also use C-only `static` array bounds (e.g. in
-// wlr_scene.h, wlr/render/color.h) which C++ rejects, and `namespace` as a
-// struct field/parameter name (wlr_layer_shell_v1.h + its generated
-// protocol header), which is a reserved C++ keyword — so neutralize both
-// for these headers only. Benign: it just drops `static` from
-// `static inline` helpers and `static const` constants (still valid), and
-// renames the `namespace` identifiers (layout unchanged). Our own C++
-// below the matching #undefs is unaffected.
+// wlr_scene.h, wlr/render/color.h) which C++ rejects, and `namespace` /
+// `class` as struct field names (layer-shell and xwayland headers), which
+// are reserved C++ keywords — so neutralize all three for these headers
+// only. Benign: it just drops `static` from `static inline` helpers and
+// `static const` constants (still valid), and renames the
+// `namespace`/`class` identifiers (layout unchanged). Our own C++ below
+// the matching #undefs is unaffected.
 #define static
 #define namespace _aquawm_namespace
+#define class _aquawm_class
 extern "C" {
 #include <wlr/backend.h>
 #include <wlr/backend/wayland.h>
@@ -62,9 +71,11 @@ extern "C" {
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/util/box.h>
 #include <wlr/util/log.h>
+#include <wlr/xwayland.h>
 }
 #undef static
 #undef namespace
+#undef class
 
 #include <algorithm>
 #include <vector>
@@ -80,6 +91,7 @@ namespace {
 
 struct Server;
 struct View;
+struct XView;
 
 struct Output {
     Server *server = nullptr;
@@ -112,6 +124,40 @@ struct View {
     struct wl_listener unmap{};
     struct wl_listener commit{};
     struct wl_listener destroy{};
+};
+
+// X11 window (Phase 3c): same tiling state as View, driven by
+// wlr_xwayland_surface events instead of xdg-shell ones. The scene node is
+// created on associate (only then does xsurface->surface exist).
+struct XView {
+    Server *server = nullptr;
+    struct wlr_xwayland_surface *xsurface = nullptr;
+    struct wlr_scene_tree *scene_tree = nullptr;
+    int x = 0;
+    int y = 0;
+    bool floating = false;
+    bool fullscreen = false;
+    int workspace = 0;
+    int applied_w = 0;
+    int applied_h = 0;
+    bool mapped = false;
+    struct wl_listener associate{};
+    struct wl_listener dissociate{};
+    struct wl_listener destroy{};
+    struct wl_listener request_configure{};
+    struct wl_listener request_activate{};
+    struct wl_listener request_close{};
+    struct wl_listener request_move{};
+    struct wl_listener request_resize{};
+    struct wl_listener request_maximize{};
+    struct wl_listener request_fullscreen{};
+};
+
+// One stacking entry (Phase 3c): exactly one pointer is set. Front of
+// server->tiles is topmost (most recently focused), across both protocols.
+struct AnyView {
+    View *v = nullptr;
+    XView *x = nullptr;
 };
 
 // Per-keyboard state: owns the listeners so wl_container_of can reach both
@@ -173,6 +219,8 @@ struct Server {
     struct wlr_session *session = nullptr;
     struct wlr_renderer *renderer = nullptr;
     struct wlr_allocator *allocator = nullptr;
+    struct wlr_compositor *compositor = nullptr;
+    struct wlr_xwayland *xwayland = nullptr;
     struct wlr_scene *scene = nullptr;
     struct wlr_scene_output_layout *scene_layout = nullptr;
     struct wlr_output_layout *output_layout = nullptr;
@@ -189,7 +237,8 @@ struct Server {
     struct wlr_seat *seat = nullptr;
     CursorEvents cursor_events{};
     CursorMode cursor_mode = CursorMode::Passthrough;
-    View *grabbed_view = nullptr;
+    AnyView grabbed_tile{};
+    bool has_grab = false;
     uint32_t grab_button = 0;
     double grab_lx = 0;
     double grab_ly = 0;
@@ -203,13 +252,19 @@ struct Server {
     struct wl_listener new_input{};
     struct wl_listener new_toplevel{};
     struct wl_listener new_layer_surface{};
+    struct wl_listener new_xwayland_surface{};
     struct wl_listener request_cursor{};
     struct wl_listener backend_destroy{};
+    // Set when the backend died on its own (host disconnect): its listeners
+    // were already detached in on_backend_destroy, so main() teardown must
+    // not remove them again (double wl_list_remove corrupts the list).
+    bool backend_gone = false;
 
     std::vector<Output *> outputs;
     std::vector<LayerSurface *> layers;
-    // Front of the vector is topmost (most recently focused).
-    std::vector<View *> views;
+    // Tiling stack across both protocols (Phase 3c). Front of the vector
+    // is topmost (most recently focused).
+    std::vector<AnyView> tiles;
 
     int active_workspace = 0;
     aquawm::Config config;
@@ -220,38 +275,196 @@ struct Server {
 };
 
 void focus_view(Server *server, View *view);
+void focus_xview(Server *server, XView *xview);
 void drop_wallpaper(Server *server);
 void arrange(Server *server);
 void arrange_layers(Server *server);
 
+// --- AnyView helpers (Phase 3c): protocol-agnostic tile access ---------
+// A tile whose surface is null (XView before associate) is inert: every
+// helper below treats it as unmapped and every setter is a no-op.
+struct wlr_surface *any_surface(const AnyView &t) {
+    if (t.v != nullptr) {
+        return t.v->toplevel->base->surface;
+    }
+    if (t.x != nullptr && t.x->xsurface->surface != nullptr) {
+        return t.x->xsurface->surface;
+    }
+    return nullptr;
+}
+
+struct wlr_scene_tree *any_tree(const AnyView &t) {
+    if (t.v != nullptr) {
+        return t.v->scene_tree;
+    }
+    if (t.x != nullptr) {
+        return t.x->scene_tree;
+    }
+    return nullptr;
+}
+
+bool any_mapped(const AnyView &t) {
+    if (any_surface(t) == nullptr) {
+        return false;
+    }
+    return t.v != nullptr ? t.v->mapped : t.x->mapped;
+}
+
+int any_workspace(const AnyView &t) {
+    return t.v != nullptr ? t.v->workspace : t.x->workspace;
+}
+
+bool any_floating(const AnyView &t) {
+    return t.v != nullptr ? t.v->floating : t.x->floating;
+}
+
+void any_set_floating(const AnyView &t, bool floating) {
+    if (t.v != nullptr) {
+        t.v->floating = floating;
+    } else if (t.x != nullptr) {
+        t.x->floating = floating;
+    }
+}
+
+bool any_fullscreen(const AnyView &t) {
+    return t.x != nullptr && t.x->fullscreen;
+}
+
+void any_set_fullscreen(const AnyView &t, bool fullscreen) {
+    if (t.x != nullptr) {
+        t.x->fullscreen = fullscreen;
+    }
+}
+
+// Current tile box in layout coordinates (for hit-testing and grabs).
+struct wlr_box any_box(const AnyView &t) {
+    if (t.v != nullptr) {
+        struct wlr_box geom = t.v->toplevel->base->geometry;
+        return {t.v->x + geom.x, t.v->y + geom.y, geom.width, geom.height};
+    }
+    const int w = t.x->applied_w > 0 ? t.x->applied_w : t.x->xsurface->width;
+    const int h = t.x->applied_h > 0 ? t.x->applied_h : t.x->xsurface->height;
+    return {t.x->x, t.x->y, w, h};
+}
+
+void any_set_pos(const AnyView &t, int x, int y) {
+    struct wlr_scene_tree *tree = any_tree(t);
+    if (tree == nullptr) {
+        return;
+    }
+    if (t.v != nullptr) {
+        t.v->x = x;
+        t.v->y = y;
+    } else {
+        t.x->x = x;
+        t.x->y = y;
+    }
+    wlr_scene_node_set_position(&tree->node, x, y);
+}
+
+void any_commit_size(const AnyView &t, int w, int h) {
+    if (w < 1) {
+        w = 1;
+    }
+    if (h < 1) {
+        h = 1;
+    }
+    if (t.v != nullptr) {
+        if (t.v->applied_w == w && t.v->applied_h == h) {
+            return;
+        }
+        t.v->applied_w = w;
+        t.v->applied_h = h;
+        wlr_xdg_toplevel_set_size(t.v->toplevel, w, h);
+    } else if (t.x != nullptr && t.x->xsurface->surface != nullptr) {
+        if (t.x->applied_w == w && t.x->applied_h == h) {
+            return;
+        }
+        t.x->applied_w = w;
+        t.x->applied_h = h;
+        wlr_xwayland_surface_configure(t.x->xsurface, t.x->x, t.x->y,
+            static_cast<uint16_t>(w), static_cast<uint16_t>(h));
+    }
+}
+
+void any_set_activated(const AnyView &t, bool active) {
+    if (t.v != nullptr) {
+        wlr_xdg_toplevel_set_activated(t.v->toplevel, active);
+    } else if (t.x != nullptr && t.x->xsurface->surface != nullptr) {
+        wlr_xwayland_surface_activate(t.x->xsurface, active);
+    }
+}
+
+void any_close(const AnyView &t) {
+    if (t.v != nullptr) {
+        wlr_xdg_toplevel_send_close(t.v->toplevel);
+    } else if (t.x != nullptr) {
+        wlr_xwayland_surface_close(t.x->xsurface);
+    }
+}
+
+bool any_matches(const AnyView &t, const AnyView &other) {
+    return t.v == other.v && t.x == other.x;
+}
+
+void any_remove_tile(Server *server, const AnyView &t) {
+    auto &tiles = server->tiles;
+    tiles.erase(std::remove_if(tiles.begin(), tiles.end(),
+        [&](const AnyView &e) { return any_matches(e, t); }),
+        tiles.end());
+}
+
+void any_raise_to_top(Server *server, const AnyView &t) {
+    struct wlr_scene_tree *tree = any_tree(t);
+    if (tree != nullptr) {
+        wlr_scene_node_raise_to_top(&tree->node);
+    }
+    any_remove_tile(server, t);
+    server->tiles.insert(server->tiles.begin(), t);
+}
+
 void spawn_terminal() {
     if (fork() == 0) {
         setsid();
+        execlp("kitty", "kitty", nullptr);
         execlp("foot", "foot", nullptr);
         execlp("weston-terminal", "weston-terminal", nullptr);
         _exit(EXIT_FAILURE);
     }
 }
 
-View *view_at(Server *server, double lx, double ly) {
-    for (View *view : server->views) {
-        if (!view->mapped || view->workspace != server->active_workspace) {
+void any_set_workspace(const AnyView &t, int ws) {
+    if (t.v != nullptr) {
+        t.v->workspace = ws;
+    } else if (t.x != nullptr) {
+        t.x->workspace = ws;
+    }
+}
+
+bool any_valid(const AnyView &t) {
+    return t.v != nullptr || t.x != nullptr;
+}
+
+bool tile_at(Server *server, double lx, double ly, AnyView &hit) {
+    for (const AnyView &t : server->tiles) {
+        if (!any_mapped(t) || any_workspace(t) != server->active_workspace) {
             continue;
         }
-        struct wlr_box geom = view->toplevel->base->geometry;
-        const int x = view->x + geom.x;
-        const int y = view->y + geom.y;
-        if (lx >= x && lx < x + geom.width && ly >= y && ly < y + geom.height) {
-            return view;
+        struct wlr_box box = any_box(t);
+        if (lx >= box.x && lx < box.x + box.width && ly >= box.y &&
+            ly < box.y + box.height) {
+            hit = t;
+            return true;
         }
     }
-    return nullptr;
+    return false;
 }
 
 // Tile all mapped, non-floating views of the active workspace using the
 // master-stack layout. Oldest window becomes master for a stable layout.
 // Tiling fills the output's usable area (full box minus layer-shell
-// exclusive zones, see arrange_layers), then applies gaps.
+// exclusive zones, see arrange_layers), then applies gaps. A mapped
+// fullscreen X11 window covers the whole usable area instead.
 void arrange(Server *server) {
     if (server->outputs.empty()) {
         return;
@@ -263,6 +476,15 @@ void arrange(Server *server) {
     } else {
         wlr_output_layout_get_box(server->output_layout, output->wlr_output, &area);
     }
+    for (const AnyView &t : server->tiles) {
+        if (any_mapped(t) && any_fullscreen(t) &&
+            any_workspace(t) == server->active_workspace) {
+            any_set_pos(t, area.x, area.y);
+            any_commit_size(t, area.width, area.height);
+            any_raise_to_top(server, t);
+            return;
+        }
+    }
     const int gaps = server->config.gaps;
     area.x += gaps;
     area.y += gaps;
@@ -271,40 +493,28 @@ void arrange(Server *server) {
     if (area.width <= 0 || area.height <= 0) {
         return;
     }
-    std::vector<View *> tiled;
-    for (auto it = server->views.rbegin(); it != server->views.rend(); ++it) {
-        View *v = *it;
-        if (v->mapped && !v->floating && v->workspace == server->active_workspace) {
-            tiled.push_back(v);
+    std::vector<AnyView> tiled;
+    for (auto it = server->tiles.rbegin(); it != server->tiles.rend(); ++it) {
+        if (any_mapped(*it) && !any_floating(*it) &&
+            any_workspace(*it) == server->active_workspace) {
+            tiled.push_back(*it);
         }
     }
     auto boxes = aquawm::master_stack(static_cast<int>(tiled.size()),
         aquawm::Box{area.x, area.y, area.width, area.height},
         server->config.nmaster, server->config.mfact);
     for (std::size_t i = 0; i < tiled.size(); ++i) {
-        View *v = tiled[i];
+        const AnyView &t = tiled[i];
         int w = boxes[i].w - 2 * gaps;
         int h = boxes[i].h - 2 * gaps;
-        if (w < 1) {
-            w = 1;
-        }
-        if (h < 1) {
-            h = 1;
-        }
-        v->x = boxes[i].x + gaps;
-        v->y = boxes[i].y + gaps;
-        wlr_scene_node_set_position(&v->scene_tree->node, v->x, v->y);
-        if (v->applied_w != w || v->applied_h != h) {
-            v->applied_w = w;
-            v->applied_h = h;
-            wlr_xdg_toplevel_set_size(v->toplevel, w, h);
-        }
+        any_set_pos(t, boxes[i].x + gaps, boxes[i].y + gaps);
+        any_commit_size(t, w, h);
     }
 }
 
-void focus_view(Server *server, View *view) {
+void focus_any(Server *server, const AnyView &t) {
     struct wlr_surface *prev_surface = server->seat->keyboard_state.focused_surface;
-    struct wlr_surface *surface = view != nullptr ? view->toplevel->base->surface : nullptr;
+    struct wlr_surface *surface = any_surface(t);
     if (prev_surface == surface) {
         return;
     }
@@ -313,20 +523,21 @@ void focus_view(Server *server, View *view) {
             wlr_xdg_toplevel_try_from_wlr_surface(prev_surface);
         if (prev_top != nullptr) {
             wlr_xdg_toplevel_set_activated(prev_top, false);
+        } else if (server->xwayland != nullptr) {
+            struct wlr_xwayland_surface *prev_x =
+                wlr_xwayland_surface_try_from_wlr_surface(prev_surface);
+            if (prev_x != nullptr) {
+                wlr_xwayland_surface_activate(prev_x, false);
+            }
         }
     }
-    if (view == nullptr) {
+    if (surface == nullptr) {
         wlr_seat_keyboard_notify_clear_focus(server->seat);
         return;
     }
     // Raise to the top both in the scene and in our focus order.
-    wlr_scene_node_raise_to_top(&view->scene_tree->node);
-    auto it = std::find(server->views.begin(), server->views.end(), view);
-    if (it != server->views.end()) {
-        server->views.erase(it);
-        server->views.insert(server->views.begin(), view);
-    }
-    wlr_xdg_toplevel_set_activated(view->toplevel, true);
+    any_raise_to_top(server, t);
+    any_set_activated(t, true);
     struct wlr_keyboard *keyboard = wlr_seat_get_keyboard(server->seat);
     if (keyboard != nullptr) {
         wlr_seat_keyboard_notify_enter(server->seat, surface, keyboard->keycodes,
@@ -336,14 +547,31 @@ void focus_view(Server *server, View *view) {
     }
 }
 
-// Most recently focused mapped view on the active workspace, if any.
-View *top_visible(Server *server) {
-    for (View *v : server->views) {
-        if (v->mapped && v->workspace == server->active_workspace) {
-            return v;
+void focus_view(Server *server, View *view) {
+    if (view == nullptr) {
+        focus_any(server, AnyView{});
+        return;
+    }
+    focus_any(server, AnyView{view, nullptr});
+}
+
+void focus_xview(Server *server, XView *xview) {
+    if (xview == nullptr) {
+        focus_any(server, AnyView{});
+        return;
+    }
+    focus_any(server, AnyView{nullptr, xview});
+}
+
+// Most recently focused mapped tile on the active workspace, if any.
+bool top_visible(Server *server, AnyView &top) {
+    for (const AnyView &t : server->tiles) {
+        if (any_mapped(t) && any_workspace(t) == server->active_workspace) {
+            top = t;
+            return true;
         }
     }
-    return nullptr;
+    return false;
 }
 
 void switch_workspace(Server *server, int ws) {
@@ -352,19 +580,25 @@ void switch_workspace(Server *server, int ws) {
         return;
     }
     server->active_workspace = ws;
-    for (View *v : server->views) {
-        wlr_scene_node_set_enabled(&v->scene_tree->node,
-            v->mapped && v->workspace == ws);
+    for (const AnyView &t : server->tiles) {
+        struct wlr_scene_tree *tree = any_tree(t);
+        if (tree != nullptr) {
+            wlr_scene_node_set_enabled(&tree->node,
+                any_mapped(t) && any_workspace(t) == ws);
+        }
     }
     arrange(server);
-    focus_view(server, top_visible(server));
+    AnyView top{};
+    if (top_visible(server, top)) {
+        focus_any(server, top);
+    }
 }
 
 void focus_cycle(Server *server, int dir) {
-    std::vector<View *> vis;
-    for (View *v : server->views) {
-        if (v->mapped && v->workspace == server->active_workspace) {
-            vis.push_back(v);
+    std::vector<AnyView> vis;
+    for (const AnyView &t : server->tiles) {
+        if (any_mapped(t) && any_workspace(t) == server->active_workspace) {
+            vis.push_back(t);
         }
     }
     if (vis.empty()) {
@@ -374,18 +608,18 @@ void focus_cycle(Server *server, int dir) {
     std::size_t idx = 0;
     bool found = false;
     for (std::size_t i = 0; i < vis.size(); ++i) {
-        if (vis[i]->toplevel->base->surface == cur) {
+        if (any_surface(vis[i]) == cur) {
             idx = i;
             found = true;
             break;
         }
     }
     if (!found) {
-        focus_view(server, vis.front());
+        focus_any(server, vis.front());
         return;
     }
     idx = (idx + static_cast<std::size_t>(dir) + vis.size()) % vis.size();
-    focus_view(server, vis[idx]);
+    focus_any(server, vis[idx]);
 }
 
 void on_view_map(struct wl_listener *listener, void * /*data*/) {
@@ -406,7 +640,10 @@ void on_view_unmap(struct wl_listener *listener, void * /*data*/) {
     arrange(server);
     if (server->seat->keyboard_state.focused_surface ==
         view->toplevel->base->surface) {
-        focus_view(server, top_visible(server));
+        AnyView top{};
+        if (top_visible(server, top)) {
+            focus_any(server, top);
+        }
     }
 }
 
@@ -428,17 +665,17 @@ void on_view_destroy(struct wl_listener *listener, void * /*data*/) {
     wl_list_remove(&view->unmap.link);
     wl_list_remove(&view->commit.link);
     wl_list_remove(&view->destroy.link);
-    auto it = std::find(server->views.begin(), server->views.end(), view);
-    if (it != server->views.end()) {
-        server->views.erase(it);
-    }
+    any_remove_tile(server, AnyView{view, nullptr});
     arrange(server);
     // The toplevel is going away: never let it keep keyboard focus, and
     // don't dereference its surface below (it may already be half-torn-down).
     if (server->seat->keyboard_state.focused_surface != nullptr) {
         wlr_seat_keyboard_notify_clear_focus(server->seat);
     }
-    focus_view(server, top_visible(server));
+    AnyView top{};
+    if (top_visible(server, top)) {
+        focus_any(server, top);
+    }
     delete view;
 }
 
@@ -465,7 +702,215 @@ void on_new_toplevel(struct wl_listener *listener, void *data) {
     view->destroy.notify = on_view_destroy;
     wl_signal_add(&toplevel->events.destroy, &view->destroy);
 
-    server->views.push_back(view);
+    server->tiles.push_back(AnyView{view, nullptr});
+}
+
+// --- X11 windows (Phase 3c) ----------------------------------------------
+// An XView joins the tiling stack on associate (when its surface exists)
+// and leaves on destroy. Override-redirect windows (menus, tooltips) and
+// fullscreen windows float above tiling; everything else tiles.
+void xview_update_floating(XView *xview) {
+    xview->floating =
+        xview->xsurface->override_redirect || xview->fullscreen;
+}
+
+void on_xview_associate(struct wl_listener *listener, void * /*data*/) {
+    XView *xview = wl_container_of(listener, xview, associate);
+    Server *server = xview->server;
+    struct wlr_scene_tree *parent =
+        server->view_tree != nullptr ? server->view_tree : &server->scene->tree;
+    xview->scene_tree =
+        wlr_scene_subsurface_tree_create(parent, xview->xsurface->surface);
+    if (xview->scene_tree == nullptr) {
+        wlr_log(WLR_ERROR, "failed to create scene node for X11 window");
+        return;
+    }
+    xview->mapped = true;
+    xview->workspace = server->active_workspace;
+    xview->fullscreen = xview->xsurface->fullscreen;
+    xview_update_floating(xview);
+    arrange(server);
+    focus_xview(server, xview);
+    wlr_log(WLR_INFO, "X11 window associated (title=%s fullscreen=%d)",
+        xview->xsurface->title != nullptr ? xview->xsurface->title : "?",
+        xview->fullscreen ? 1 : 0);
+}
+
+void on_xview_dissociate(struct wl_listener *listener, void * /*data*/) {
+    XView *xview = wl_container_of(listener, xview, dissociate);
+    Server *server = xview->server;
+    xview->mapped = false;
+    if (xview->scene_tree != nullptr) {
+        wlr_scene_node_destroy(&xview->scene_tree->node);
+        xview->scene_tree = nullptr;
+    }
+    arrange(server);
+    AnyView top{};
+    if (top_visible(server, top)) {
+        focus_any(server, top);
+    }
+}
+
+void on_xview_destroy(struct wl_listener *listener, void * /*data*/) {
+    XView *xview = wl_container_of(listener, xview, destroy);
+    Server *server = xview->server;
+    xview->mapped = false;
+    wl_list_remove(&xview->associate.link);
+    wl_list_remove(&xview->dissociate.link);
+    wl_list_remove(&xview->destroy.link);
+    wl_list_remove(&xview->request_configure.link);
+    wl_list_remove(&xview->request_activate.link);
+    wl_list_remove(&xview->request_close.link);
+    wl_list_remove(&xview->request_move.link);
+    wl_list_remove(&xview->request_resize.link);
+    wl_list_remove(&xview->request_maximize.link);
+    wl_list_remove(&xview->request_fullscreen.link);
+    any_remove_tile(server, AnyView{nullptr, xview});
+    if (xview->scene_tree != nullptr) {
+        wlr_scene_node_destroy(&xview->scene_tree->node);
+        xview->scene_tree = nullptr;
+    }
+    arrange(server);
+    if (server->seat->keyboard_state.focused_surface != nullptr) {
+        wlr_seat_keyboard_notify_clear_focus(server->seat);
+    }
+    AnyView top{};
+    if (top_visible(server, top)) {
+        focus_any(server, top);
+    }
+    delete xview;
+}
+
+void on_xview_request_configure(struct wl_listener *listener, void *data) {
+    XView *xview = wl_container_of(listener, xview, request_configure);
+    auto *event =
+        static_cast<struct wlr_xwayland_surface_configure_event *>(data);
+    if (xview->floating || !xview->mapped) {
+        // Floating or not yet placed: honor the requested geometry.
+        xview->x = event->x;
+        xview->y = event->y;
+        if (xview->scene_tree != nullptr) {
+            wlr_scene_node_set_position(&xview->scene_tree->node, event->x,
+                event->y);
+        }
+        xview->applied_w = event->width;
+        xview->applied_h = event->height;
+    }
+    // Tiled windows keep the arranged geometry; either way ack so the
+    // client stops waiting. Unmapped surfaces have no size yet.
+    if (xview->scene_tree != nullptr) {
+        wlr_xwayland_surface_configure(xview->xsurface, xview->x, xview->y,
+            static_cast<uint16_t>(xview->applied_w > 0 ? xview->applied_w : 640),
+            static_cast<uint16_t>(xview->applied_h > 0 ? xview->applied_h : 480));
+    }
+}
+
+void on_xview_request_activate(struct wl_listener *listener, void * /*data*/) {
+    XView *xview = wl_container_of(listener, xview, request_activate);
+    focus_xview(xview->server, xview);
+}
+
+void on_xview_request_close(struct wl_listener *listener, void * /*data*/) {
+    XView *xview = wl_container_of(listener, xview, request_close);
+    wlr_xwayland_surface_close(xview->xsurface);
+}
+
+void on_xview_request_move(struct wl_listener *listener, void * /*data*/) {
+    XView *xview = wl_container_of(listener, xview, request_move);
+    Server *server = xview->server;
+    AnyView t{nullptr, xview};
+    if (!any_floating(t)) {
+        any_set_floating(t, true);
+        arrange(server);
+    }
+    any_raise_to_top(server, t);
+    server->grabbed_tile = t;
+    server->has_grab = true;
+    server->cursor_mode = CursorMode::Move;
+    server->grab_button = 0;
+    server->grab_lx = server->cursor->x;
+    server->grab_ly = server->cursor->y;
+    struct wlr_box box = any_box(t);
+    server->grab_vx = box.x;
+    server->grab_vy = box.y;
+    server->grab_vw = box.width;
+    server->grab_vh = box.height;
+}
+
+void on_xview_request_resize(struct wl_listener *listener, void * /*data*/) {
+    XView *xview = wl_container_of(listener, xview, request_resize);
+    Server *server = xview->server;
+    AnyView t{nullptr, xview};
+    if (!any_floating(t)) {
+        any_set_floating(t, true);
+        arrange(server);
+    }
+    any_raise_to_top(server, t);
+    server->grabbed_tile = t;
+    server->has_grab = true;
+    server->cursor_mode = CursorMode::Resize;
+    server->grab_button = 0;
+    server->grab_lx = server->cursor->x;
+    server->grab_ly = server->cursor->y;
+    struct wlr_box box = any_box(t);
+    server->grab_vx = box.x;
+    server->grab_vy = box.y;
+    server->grab_vw = box.width;
+    server->grab_vh = box.height;
+}
+
+void on_xview_request_maximize(struct wl_listener *listener, void * /*data*/) {
+    // Tiled windows already fill their tile; accept the requested state so
+    // the client stops waiting, then re-tile (a no-op geometrically).
+    // (request signals carry no payload; the surface fields are pre-updated.)
+    XView *xview = wl_container_of(listener, xview, request_maximize);
+    wlr_xwayland_surface_set_maximized(xview->xsurface,
+        xview->xsurface->maximized_horz, xview->xsurface->maximized_vert);
+    arrange(xview->server);
+}
+
+void on_xview_request_fullscreen(struct wl_listener *listener, void * /*data*/) {
+    XView *xview = wl_container_of(listener, xview, request_fullscreen);
+    Server *server = xview->server;
+    const bool fullscreen = xview->xsurface->fullscreen;
+    any_set_fullscreen(AnyView{nullptr, xview}, fullscreen);
+    xview_update_floating(xview);
+    wlr_xwayland_surface_set_fullscreen(xview->xsurface, fullscreen);
+    arrange(server);
+    if (fullscreen) {
+        focus_xview(server, xview);
+    }
+}
+
+void on_new_xwayland_surface(struct wl_listener *listener, void *data) {
+    Server *server = wl_container_of(listener, server, new_xwayland_surface);
+    struct wlr_xwayland_surface *xsurface =
+        static_cast<struct wlr_xwayland_surface *>(data);
+    XView *xview = new XView();
+    xview->server = server;
+    xview->xsurface = xsurface;
+    xview->associate.notify = on_xview_associate;
+    wl_signal_add(&xsurface->events.associate, &xview->associate);
+    xview->dissociate.notify = on_xview_dissociate;
+    wl_signal_add(&xsurface->events.dissociate, &xview->dissociate);
+    xview->destroy.notify = on_xview_destroy;
+    wl_signal_add(&xsurface->events.destroy, &xview->destroy);
+    xview->request_configure.notify = on_xview_request_configure;
+    wl_signal_add(&xsurface->events.request_configure, &xview->request_configure);
+    xview->request_activate.notify = on_xview_request_activate;
+    wl_signal_add(&xsurface->events.request_activate, &xview->request_activate);
+    xview->request_close.notify = on_xview_request_close;
+    wl_signal_add(&xsurface->events.request_close, &xview->request_close);
+    xview->request_move.notify = on_xview_request_move;
+    wl_signal_add(&xsurface->events.request_move, &xview->request_move);
+    xview->request_resize.notify = on_xview_request_resize;
+    wl_signal_add(&xsurface->events.request_resize, &xview->request_resize);
+    xview->request_maximize.notify = on_xview_request_maximize;
+    wl_signal_add(&xsurface->events.request_maximize, &xview->request_maximize);
+    xview->request_fullscreen.notify = on_xview_request_fullscreen;
+    wl_signal_add(&xsurface->events.request_fullscreen,
+        &xview->request_fullscreen);
+    server->tiles.push_back(AnyView{nullptr, xview});
 }
 
 // --- Layer-shell bars (Phase 3b) ------------------------------------------
@@ -599,17 +1044,18 @@ void on_new_layer_surface(struct wl_listener *listener, void *data) {
         layer->output->name != nullptr ? layer->output->name : "?");
 }
 
-View *focused_view(Server *server) {
+bool focused_tile(Server *server, AnyView &focused) {
     struct wlr_surface *s = server->seat->keyboard_state.focused_surface;
     if (s == nullptr) {
-        return nullptr;
+        return false;
     }
-    for (View *v : server->views) {
-        if (v->mapped && v->toplevel->base->surface == s) {
-            return v;
+    for (const AnyView &t : server->tiles) {
+        if (any_mapped(t) && any_surface(t) == s) {
+            focused = t;
+            return true;
         }
     }
-    return nullptr;
+    return false;
 }
 
 uint32_t wlr_to_tile_mods(uint32_t wlr_mods) {
@@ -643,15 +1089,21 @@ bool reload_config(Server *server) {
     if (server->active_workspace >= server->config.workspaces) {
         server->active_workspace = server->config.workspaces - 1;
     }
-    for (View *v : server->views) {
-        if (v->workspace >= server->config.workspaces) {
-            v->workspace = 0;
+    for (const AnyView &t : server->tiles) {
+        if (any_workspace(t) >= server->config.workspaces) {
+            any_set_workspace(t, 0);
         }
-        wlr_scene_node_set_enabled(&v->scene_tree->node,
-            v->mapped && v->workspace == server->active_workspace);
+        struct wlr_scene_tree *tree = any_tree(t);
+        if (tree != nullptr) {
+            wlr_scene_node_set_enabled(&tree->node,
+                any_mapped(t) && any_workspace(t) == server->active_workspace);
+        }
     }
     arrange(server);
-    focus_view(server, top_visible(server));
+    AnyView top{};
+    if (top_visible(server, top)) {
+        focus_any(server, top);
+    }
     wlr_log(WLR_INFO, "config reloaded: gaps=%d mfact=%.2f nmaster=%d "
             "workspaces=%d binds=%zu",
         server->config.gaps, static_cast<double>(server->config.mfact),
@@ -667,9 +1119,9 @@ void run_action(Server *server, const aquawm::Keybind &bind) {
     if (a == "spawn-terminal") {
         spawn_terminal();
     } else if (a == "close") {
-        View *focused = focused_view(server);
-        if (focused != nullptr) {
-            wlr_xdg_toplevel_send_close(focused->toplevel);
+        AnyView focused{};
+        if (focused_tile(server, focused)) {
+            any_close(focused);
         }
     } else if (a == "quit") {
         wl_display_terminate(server->display);
@@ -678,24 +1130,31 @@ void run_action(Server *server, const aquawm::Keybind &bind) {
     } else if (a == "focus-prev") {
         focus_cycle(server, -1);
     } else if (a == "toggle-floating") {
-        View *focused = focused_view(server);
-        if (focused != nullptr) {
-            focused->floating = !focused->floating;
+        AnyView focused{};
+        if (focused_tile(server, focused)) {
+            any_set_floating(focused, !any_floating(focused));
             // Keep the window where it is and on top while floating.
-            wlr_scene_node_raise_to_top(&focused->scene_tree->node);
+            any_raise_to_top(server, focused);
             arrange(server);
         }
     } else if (a == "workspace") {
         switch_workspace(server, bind.arg - 1);
     } else if (a == "move-to-workspace") {
-        View *focused = focused_view(server);
+        AnyView focused{};
         int ws = bind.arg - 1;
-        if (focused != nullptr && ws >= 0 && ws < server->config.workspaces) {
-            focused->workspace = ws;
-            wlr_scene_node_set_enabled(&focused->scene_tree->node,
-                focused->mapped && ws == server->active_workspace);
+        if (focused_tile(server, focused) && ws >= 0 &&
+            ws < server->config.workspaces) {
+            any_set_workspace(focused, ws);
+            struct wlr_scene_tree *tree = any_tree(focused);
+            if (tree != nullptr) {
+                wlr_scene_node_set_enabled(&tree->node,
+                    any_mapped(focused) && ws == server->active_workspace);
+            }
             arrange(server);
-            focus_view(server, top_visible(server));
+            AnyView top{};
+            if (top_visible(server, top)) {
+                focus_any(server, top);
+            }
         }
     } else if (a == "reload-config") {
         reload_config(server);
@@ -815,18 +1274,14 @@ void set_default_cursor(Server *server) {
 // Shared tail of both motion handlers: drive an active drag, otherwise
 // forward to the seat and restore the default cursor off-client.
 void cursor_process_position(Server *server, uint32_t time_msec) {
-    if (server->cursor_mode != CursorMode::Passthrough &&
-        server->grabbed_view != nullptr) {
-        View *view = server->grabbed_view;
+    if (server->cursor_mode != CursorMode::Passthrough && server->has_grab) {
+        const AnyView t = server->grabbed_tile;
         const int dx =
             static_cast<int>(server->cursor->x - server->grab_lx);
         const int dy =
             static_cast<int>(server->cursor->y - server->grab_ly);
         if (server->cursor_mode == CursorMode::Move) {
-            view->x = server->grab_vx + dx;
-            view->y = server->grab_vy + dy;
-            wlr_scene_node_set_position(&view->scene_tree->node, view->x,
-                view->y);
+            any_set_pos(t, server->grab_vx + dx, server->grab_vy + dy);
         } else {
             int w = server->grab_vw + dx;
             int h = server->grab_vh + dy;
@@ -836,7 +1291,7 @@ void cursor_process_position(Server *server, uint32_t time_msec) {
             if (h < 100) {
                 h = 100;
             }
-            wlr_xdg_toplevel_set_size(view->toplevel, w, h);
+            any_commit_size(t, w, h);
         }
         return;
     }
@@ -848,23 +1303,25 @@ void cursor_process_position(Server *server, uint32_t time_msec) {
     }
 }
 
-void begin_grab(Server *server, View *view, CursorMode mode, uint32_t button) {
-    if (!view->floating) {
+void begin_grab(Server *server, const AnyView &t, CursorMode mode, uint32_t button) {
+    if (!any_floating(t)) {
         // Dragging floats the window first so the tiling layout reflows
         // around the gap it leaves behind.
-        view->floating = true;
+        any_set_floating(t, true);
         arrange(server);
     }
-    wlr_scene_node_raise_to_top(&view->scene_tree->node);
-    server->grabbed_view = view;
+    any_raise_to_top(server, t);
+    server->grabbed_tile = t;
+    server->has_grab = true;
     server->grab_button = button;
     server->cursor_mode = mode;
     server->grab_lx = server->cursor->x;
     server->grab_ly = server->cursor->y;
-    server->grab_vx = view->x;
-    server->grab_vy = view->y;
-    server->grab_vw = view->applied_w > 0 ? view->applied_w : 640;
-    server->grab_vh = view->applied_h > 0 ? view->applied_h : 480;
+    struct wlr_box box = any_box(t);
+    server->grab_vx = box.x;
+    server->grab_vy = box.y;
+    server->grab_vw = box.width > 0 ? box.width : 640;
+    server->grab_vh = box.height > 0 ? box.height : 480;
 }
 
 void on_cursor_motion(struct wl_listener *listener, void *data) {
@@ -890,21 +1347,26 @@ void on_cursor_button(struct wl_listener *listener, void *data) {
     wlr_seat_pointer_notify_button(server->seat, event->time_msec, event->button,
         event->state);
     if (event->state == WL_POINTER_BUTTON_STATE_PRESSED) {
-        View *view = view_at(server, server->cursor->x, server->cursor->y);
-        focus_view(server, view);
+        AnyView hit{};
+        if (tile_at(server, server->cursor->x, server->cursor->y, hit)) {
+            focus_any(server, hit);
+        } else {
+            focus_any(server, AnyView{});
+        }
         struct wlr_keyboard *kbd = wlr_seat_get_keyboard(server->seat);
         const uint32_t mods =
             kbd != nullptr ? wlr_keyboard_get_modifiers(kbd) : 0;
-        if (view != nullptr && (mods & WLR_MODIFIER_ALT) != 0) {
+        if (any_valid(hit) && (mods & WLR_MODIFIER_ALT) != 0) {
             if (event->button == BTN_LEFT) {
-                begin_grab(server, view, CursorMode::Move, event->button);
+                begin_grab(server, hit, CursorMode::Move, event->button);
             } else if (event->button == BTN_RIGHT) {
-                begin_grab(server, view, CursorMode::Resize, event->button);
+                begin_grab(server, hit, CursorMode::Resize, event->button);
             }
         }
     } else if (event->button == server->grab_button) {
         server->cursor_mode = CursorMode::Passthrough;
-        server->grabbed_view = nullptr;
+        server->grabbed_tile = AnyView{};
+        server->has_grab = false;
         server->grab_button = 0;
     }
 }
@@ -944,14 +1406,17 @@ void on_new_input(struct wl_listener *listener, void *data) {
 }
 
 // If the backend dies (e.g. the host disconnects our nested window),
-// leave the event loop so main() can tear down in order instead of
-// tripping wlroots' listener-list assertions during display destroy.
-// NOTE: this listener removes itself: it fires from inside backend
-// destruction, so it must already be detached when wlr_backend_finish
-// runs its empty-list assertions afterwards.
+// detach every backend listener, then leave the event loop so main() can
+// tear down in order. Detaching all three matters: wlr_backend_finish
+// asserts the destroy/new_input/new_output listener lists are all empty,
+// so leaving new_input/new_output attached aborts (SIGABRT) instead of
+// exiting cleanly. main() teardown skips them via backend_gone.
 void on_backend_destroy(struct wl_listener *listener, void * /*data*/) {
     Server *server = wl_container_of(listener, server, backend_destroy);
+    wl_list_remove(&server->new_input.link);
+    wl_list_remove(&server->new_output.link);
     wl_list_remove(&listener->link);
+    server->backend_gone = true;
     wlr_log(WLR_ERROR, "backend destroyed; shutting down");
     wl_display_terminate(server->display);
 }
@@ -1360,9 +1825,24 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    wlr_compositor_create(server.display, 6, server.renderer);
+    server.compositor = wlr_compositor_create(server.display, 6, server.renderer);
+    if (server.compositor == nullptr) {
+        std::fprintf(stderr, "aquawm: failed to create compositor\n");
+        return 1;
+    }
     wlr_subcompositor_create(server.display);
     wlr_data_device_manager_create(server.display);
+
+    // XWayland (Phase 3c, lazy): no X server spawns until an X11 client
+    // actually connects. The wlr_compositor is required for XWM startup.
+    server.xwayland = wlr_xwayland_create(server.display, server.compositor, true);
+    if (server.xwayland == nullptr) {
+        std::fprintf(stderr, "aquawm: failed to create Xwayland\n");
+        return 1;
+    }
+    server.new_xwayland_surface.notify = on_new_xwayland_surface;
+    wl_signal_add(&server.xwayland->events.new_surface,
+        &server.new_xwayland_surface);
 
     server.output_layout = wlr_output_layout_create(server.display);
     server.scene = wlr_scene_create();
@@ -1436,6 +1916,9 @@ int main(int argc, char **argv) {
     server.seat = wlr_seat_create(server.display, "seat0");
     server.request_cursor.notify = on_request_cursor;
     wl_signal_add(&server.seat->events.request_set_cursor, &server.request_cursor);
+    if (server.xwayland != nullptr) {
+        wlr_xwayland_set_seat(server.xwayland, server.seat);
+    }
 
     server.new_input.notify = on_new_input;
     wl_signal_add(&server.backend->events.new_input, &server.new_input);
@@ -1460,13 +1943,17 @@ int main(int argc, char **argv) {
 
     // Tear down in order: detach our listeners first so backend/display
     // destruction never trips wlroots' listener-list assertions.
-    // (backend_destroy detaches itself if/when it fires, including during
-    // display destroy on a normal exit, so it is deliberately not removed
-    // here.)
-    wl_list_remove(&server.new_output.link);
-    wl_list_remove(&server.new_input.link);
+    // (On a backend-initiated shutdown on_backend_destroy already detached
+    // the backend listeners and set backend_gone; removing them twice
+    // would corrupt the list, so skip them here in that case.)
+    if (!server.backend_gone) {
+        wl_list_remove(&server.new_output.link);
+        wl_list_remove(&server.new_input.link);
+        wl_list_remove(&server.backend_destroy.link);
+    }
     wl_list_remove(&server.new_toplevel.link);
     wl_list_remove(&server.new_layer_surface.link);
+    wl_list_remove(&server.new_xwayland_surface.link);
     wl_list_remove(&server.request_cursor.link);
     wl_list_remove(&server.cursor_events.motion.link);
     wl_list_remove(&server.cursor_events.motion_absolute.link);

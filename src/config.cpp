@@ -9,7 +9,7 @@
 //   bind("Alt", "k", "focus-prev")
 //   bind("Alt", "space", "toggle-floating")
 //   bind("Alt", "q", "close")
-//   bind("Alt+Shift", "e", "quit")
+//   bind("Alt", "m", "quit")
 //   bind("Alt+Shift", "r", "reload-config")
 //   for i = 1, 4 do
 //       bind("Alt", tostring(i), "workspace", i)
@@ -163,9 +163,8 @@ Config default_config() {
     add("Alt", "k", "focus-prev");
     add("Alt", "space", "toggle-floating");
     add("Alt", "q", "close");
-    add("Alt+Shift", "e", "quit");
+    add("Alt", "m", "quit"); // back to the login manager (the only quit bind)
     add("Alt+Shift", "r", "reload-config");
-    add("Ctrl+Alt", "q", "quit");
     for (int i = 1; i <= 4; ++i) {
         char key[2] = {static_cast<char>('0' + i), '\0'};
         add("Alt", key, "workspace", i);

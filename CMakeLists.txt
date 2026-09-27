@@ -19,6 +19,7 @@ pkg_check_modules(LUA REQUIRED lua)
 pkg_check_modules(JPEG REQUIRED libjpeg)
 pkg_check_modules(PNG REQUIRED libpng)
 pkg_check_modules(DRM REQUIRED libdrm)
+pkg_check_modules(XCB REQUIRED xcb xcb-ewmh xcb-icccm)
 
 # Layer-shell protocol (Phase 3b): wlroots' own layer-shell header includes
 # the generated server header, which is not shipped in install prefixes
@@ -50,6 +51,7 @@ target_include_directories(aquawm PRIVATE
   ${JPEG_INCLUDE_DIRS}
   ${PNG_INCLUDE_DIRS}
   ${DRM_INCLUDE_DIRS}
+  ${XCB_INCLUDE_DIRS}
   ${CMAKE_CURRENT_BINARY_DIR}/protocol
   src
 )
