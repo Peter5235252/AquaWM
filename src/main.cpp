@@ -366,8 +366,13 @@ struct wlr_box any_box(const AnyView &t) {
         struct wlr_box geom = t.v->toplevel->base->geometry;
         return {t.v->x + geom.x, t.v->y + geom.y, geom.width, geom.height};
     }
-    const int w = t.x->applied_w > 0 ? t.x->applied_w : t.x->xsurface->width;
-    const int h = t.x->applied_h > 0 ? t.x->applied_h : t.x->xsurface->height;
+    // Prefer the live surface size: cell-granular X clients (xterm) render
+    // smaller than the last configured size, and hit-testing the stale
+    // applied size creates a dead zone along the bottom/right edges.
+    const int w = t.x->xsurface->width > 0 ? t.x->xsurface->width
+        : (t.x->applied_w > 0 ? t.x->applied_w : 640);
+    const int h = t.x->xsurface->height > 0 ? t.x->xsurface->height
+        : (t.x->applied_h > 0 ? t.x->applied_h : 480);
     return {t.x->x, t.x->y, w, h};
 }
 
@@ -1432,8 +1437,22 @@ void on_cursor_button(struct wl_listener *listener, void *data) {
     if (event->state == WL_POINTER_BUTTON_STATE_PRESSED) {
         AnyView hit{};
         if (tile_at(server, server->cursor->x, server->cursor->y, hit)) {
+            struct wlr_box box = any_box(hit);
+            const char *name = "?";
+            if (hit.v != nullptr && hit.v->toplevel->app_id != nullptr) {
+                name = hit.v->toplevel->app_id;
+            } else if (hit.x != nullptr && hit.x->xsurface->title != nullptr) {
+                name = hit.x->xsurface->title;
+            }
+            wlr_log(WLR_INFO,
+                "pointer press: cursor=(%.0f,%.0f) hit=%s box=(%d,%d %dx%d) local=(%.0f,%.0f)",
+                server->cursor->x, server->cursor->y, name, box.x, box.y,
+                box.width, box.height, server->cursor->x - box.x,
+                server->cursor->y - box.y);
             focus_any(server, hit);
         } else {
+            wlr_log(WLR_INFO, "pointer press: cursor=(%.0f,%.0f) hit=none",
+                server->cursor->x, server->cursor->y);
             focus_any(server, AnyView{});
         }
         struct wlr_keyboard *kbd = wlr_seat_get_keyboard(server->seat);
