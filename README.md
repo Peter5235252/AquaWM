@@ -228,10 +228,6 @@ WAYLAND_DISPLAY=wayland-1 kitty
 | click                 | focus window                  |
 | `Super+Left-drag`     | move window (floats it first) |
 | `Super+Right-drag`    | resize window (floats it first) |
-
-The focused window gets a blue border drawn on its edge; it tracks moves, resizes and
-workspace switches, and shows on floating and fullscreen windows too.
-
 ## Configuration (Phase 3a)
 
 Settings and keybindings live in Lua, not in C++:

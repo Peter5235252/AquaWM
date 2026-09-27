@@ -103,21 +103,6 @@ struct Server;
 struct View;
 struct XView;
 
-// Focus border (blue outline around the focused tile): one tree with four
-// solid rects, parented to the tile's own scene node so it tracks moves
-// and renders above the client content. Created on demand, toggled via
-// the tree node; dies with the tile node (pointers then nulled).
-struct TileBorder {
-    struct wlr_scene_tree *tree = nullptr;
-    struct wlr_scene_rect *top = nullptr;
-    struct wlr_scene_rect *bottom = nullptr;
-    struct wlr_scene_rect *left = nullptr;
-    struct wlr_scene_rect *right = nullptr;
-};
-
-constexpr int BORDER_W = 2;
-constexpr float BORDER_COLOR[4] = {0.15f, 0.45f, 1.0f, 1.0f};
-
 struct Output {
     Server *server = nullptr;
     struct wlr_output *wlr_output = nullptr;
@@ -150,7 +135,6 @@ struct View {
     int applied_w = 0;
     int applied_h = 0;
     bool mapped = false;
-    TileBorder border{};
     struct wl_listener map{};
     struct wl_listener unmap{};
     struct wl_listener commit{};
@@ -172,12 +156,6 @@ struct XView {
     int applied_w = 0;
     int applied_h = 0;
     bool mapped = false;
-    TileBorder border{};
-    // Surface-commit listener is wired at associate (the surface only
-    // exists then) and unwired at dissociate; commit_wired tracks it so a
-    // map/unmap cycle never double-adds and destroy never double-removes.
-    bool commit_wired = false;
-    struct wl_listener surface_commit{};
     struct wl_listener associate{};
     struct wl_listener dissociate{};
     struct wl_listener destroy{};
@@ -469,90 +447,6 @@ void any_raise_to_top(Server *server, const AnyView &t) {
     server->tiles.insert(server->tiles.begin(), t);
 }
 
-TileBorder *any_border(const AnyView &t) {
-    if (t.v != nullptr) {
-        return &t.v->border;
-    }
-    if (t.x != nullptr) {
-        return &t.x->border;
-    }
-    return nullptr;
-}
-
-// Position the border rects around the tile box (tile-local coordinates).
-void border_place(TileBorder *b, int x, int y, int w, int h) {
-    if (b == nullptr || b->tree == nullptr) {
-        return;
-    }
-    // Hyprland-style: outline sits ON the window boundary, not outside it.
-    wlr_scene_node_set_position(&b->top->node, x, y);
-    wlr_scene_rect_set_size(b->top, w, BORDER_W);
-    wlr_scene_node_set_position(&b->bottom->node, x, y + h - BORDER_W);
-    wlr_scene_rect_set_size(b->bottom, w, BORDER_W);
-    wlr_scene_node_set_position(&b->left->node, x, y + BORDER_W);
-    wlr_scene_rect_set_size(b->left, BORDER_W, h - 2 * BORDER_W);
-    wlr_scene_node_set_position(&b->right->node, x + w - BORDER_W, y + BORDER_W);
-    wlr_scene_rect_set_size(b->right, BORDER_W, h - 2 * BORDER_W);
-}
-
-// Show the border on the keyboard-focused tile only; hide everywhere else.
-// Creates the nodes on first use, parented to the tile so they track it.
-void border_refresh(Server *server) {
-    struct wlr_surface *focused =
-        server->seat->keyboard_state.focused_surface;
-    for (const AnyView &t : server->tiles) {
-        TileBorder *b = any_border(t);
-        struct wlr_scene_tree *tree = any_tree(t);
-        if (b == nullptr || tree == nullptr) {
-            continue;
-        }
-        struct wlr_surface *s = any_surface(t);
-        const bool show = s != nullptr && s == focused && any_mapped(t) &&
-            any_workspace(t) == server->active_workspace;
-        if (show && b->tree == nullptr) {
-            b->tree = wlr_scene_tree_create(tree);
-            if (b->tree == nullptr) {
-                continue;
-            }
-            b->top = wlr_scene_rect_create(b->tree, 0, 0, BORDER_COLOR);
-            b->bottom =
-                wlr_scene_rect_create(b->tree, 0, 0, BORDER_COLOR);
-            b->left = wlr_scene_rect_create(b->tree, 0, 0, BORDER_COLOR);
-            b->right =
-                wlr_scene_rect_create(b->tree, 0, 0, BORDER_COLOR);
-            if (b->top == nullptr || b->bottom == nullptr ||
-                b->left == nullptr || b->right == nullptr) {
-                // Partial creation: drop the tree (children go with it).
-                wlr_scene_node_destroy(&b->tree->node);
-                b->tree = nullptr;
-                b->top = b->bottom = b->left = b->right = nullptr;
-                continue;
-            }
-        }
-        if (b->tree == nullptr) {
-            continue;
-        }
-        if (show) {
-            // Tile-local box: layout box minus the tile origin.
-            const int tx = t.v != nullptr ? t.v->x : t.x->x;
-            const int ty = t.v != nullptr ? t.v->y : t.x->y;
-            struct wlr_box box = any_box(t);
-            border_place(b, box.x - tx, box.y - ty, box.width, box.height);
-        }
-        wlr_scene_node_set_enabled(&b->tree->node, show);
-    }
-}
-
-// Forget border nodes owned by a dying tile tree (children die with it;
-// never explicitly destroy them here).
-void border_forget(const AnyView &t) {
-    TileBorder *b = any_border(t);
-    if (b != nullptr) {
-        b->tree = nullptr;
-        b->top = b->bottom = b->left = b->right = nullptr;
-    }
-}
-
 void spawn_terminal() {
     if (fork() == 0) {
         setsid();
@@ -651,9 +545,6 @@ void arrange(Server *server) {
         any_set_pos(t, boxes[i].x + gaps, boxes[i].y + gaps);
         any_commit_size(t, w, h);
     }
-    // Reposition the focus border: arrange moves windows without changing
-    // focus, and focus_any early-returns when the surface is unchanged.
-    border_refresh(server);
 }
 
 void focus_any(Server *server, const AnyView &t) {
@@ -689,7 +580,6 @@ void focus_any(Server *server, const AnyView &t) {
     } else {
         wlr_seat_keyboard_notify_enter(server->seat, surface, nullptr, 0, nullptr);
     }
-    border_refresh(server);
 }
 
 void focus_view(Server *server, View *view) {
@@ -789,7 +679,6 @@ void on_view_unmap(struct wl_listener *listener, void * /*data*/) {
     wlr_log(WLR_INFO, "xdg toplevel unmapped: app_id=%s",
         view->toplevel->app_id != nullptr ? view->toplevel->app_id : "?");
     view->mapped = false;
-    border_refresh(server);
     wlr_scene_node_set_enabled(&view->scene_tree->node, false);
     arrange(server);
     if (server->seat->keyboard_state.focused_surface ==
@@ -807,9 +696,6 @@ void on_view_commit(struct wl_listener *listener, void * /*data*/) {
         // Suggest a default size; the tiling phase will set this per layout.
         wlr_xdg_toplevel_set_size(view->toplevel, 640, 480);
     }
-    // Client acked a new size asynchronously (e.g. after drag-resize):
-    // reposition the focus border, which otherwise tracks stale geometry.
-    border_refresh(view->server);
 }
 
 void on_view_destroy(struct wl_listener *listener, void * /*data*/) {
@@ -822,8 +708,6 @@ void on_view_destroy(struct wl_listener *listener, void * /*data*/) {
     wl_list_remove(&view->unmap.link);
     wl_list_remove(&view->commit.link);
     wl_list_remove(&view->destroy.link);
-    // Border nodes die with the scene tree; forget them, never destroy.
-    border_forget(AnyView{view, nullptr});
     any_remove_tile(server, AnyView{view, nullptr});
     arrange(server);
     // The toplevel is going away: never let it keep keyboard focus, and
@@ -873,12 +757,6 @@ void xview_update_floating(XView *xview) {
         xview->xsurface->override_redirect || xview->fullscreen;
 }
 
-void on_xview_surface_commit(struct wl_listener *listener, void * /*data*/) {
-    XView *xview = wl_container_of(listener, xview, surface_commit);
-    // Client acked a new size asynchronously: reposition the focus border.
-    border_refresh(xview->server);
-}
-
 void on_xview_associate(struct wl_listener *listener, void * /*data*/) {
     XView *xview = wl_container_of(listener, xview, associate);
     Server *server = xview->server;
@@ -894,12 +772,6 @@ void on_xview_associate(struct wl_listener *listener, void * /*data*/) {
     xview->workspace = server->active_workspace;
     xview->fullscreen = xview->xsurface->fullscreen;
     xview_update_floating(xview);
-    if (!xview->commit_wired) {
-        xview->surface_commit.notify = on_xview_surface_commit;
-        wl_signal_add(&xview->xsurface->surface->events.commit,
-            &xview->surface_commit);
-        xview->commit_wired = true;
-    }
     arrange(server);
     focus_xview(server, xview);
     wlr_log(WLR_INFO, "X11 window associated (title=%s fullscreen=%d)",
@@ -911,15 +783,10 @@ void on_xview_dissociate(struct wl_listener *listener, void * /*data*/) {
     XView *xview = wl_container_of(listener, xview, dissociate);
     Server *server = xview->server;
     xview->mapped = false;
-    if (xview->commit_wired) {
-        wl_list_remove(&xview->surface_commit.link);
-        xview->commit_wired = false;
-    }
     if (xview->scene_tree != nullptr) {
         wlr_scene_node_destroy(&xview->scene_tree->node);
         xview->scene_tree = nullptr;
     }
-    border_forget(AnyView{nullptr, xview});
     arrange(server);
     AnyView top{};
     if (top_visible(server, top)) {
@@ -941,11 +808,6 @@ void on_xview_destroy(struct wl_listener *listener, void * /*data*/) {
     wl_list_remove(&xview->request_resize.link);
     wl_list_remove(&xview->request_maximize.link);
     wl_list_remove(&xview->request_fullscreen.link);
-    if (xview->commit_wired) {
-        wl_list_remove(&xview->surface_commit.link);
-        xview->commit_wired = false;
-    }
-    border_forget(AnyView{nullptr, xview});
     any_remove_tile(server, AnyView{nullptr, xview});
     if (xview->scene_tree != nullptr) {
         wlr_scene_node_destroy(&xview->scene_tree->node);
@@ -1487,7 +1349,6 @@ void cursor_process_position(Server *server, uint32_t time_msec) {
             }
             any_commit_size(t, w, h);
         }
-        border_refresh(server);
         return;
     }
     // Focus-follows-mouse: enter the topmost tile under the cursor (with
