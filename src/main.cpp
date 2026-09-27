@@ -1,7 +1,11 @@
-// aquawm - Phase 3a: Lua-configured master-stack tiling compositor.
+// aquawm - Phase 3b: Lua-configured master-stack tiling compositor with
+// layer-shell bar support.
 // Settings (gaps, mfact, nmaster, workspaces) and all keybindings come from
 // ~/.config/aquawm/aquawm.lua (see examples/aquawm.lua), reloadable via
 // Alt+Shift+R or SIGHUP; built-in defaults apply when missing or broken.
+// Layer-shell clients (e.g. waybar) render in protocol order above/below
+// tiling views and reserve their exclusive zone, which tiling shrinks
+// around. Pointer/keyboard input still goes to tiling views only.
 // Pointer: click focuses, Alt+Left-drag moves (floating tiled windows
 // first), Alt+Right-drag resizes, with a default xcursor otherwise.
 //
@@ -13,6 +17,7 @@
 //     Alt+Return spawns a terminal, Alt+J/K cycles focus, Alt+Space toggles
 //     floating, Alt+1..4 switches between 4 workspaces, Alt+Shift+1..4 moves
 //     the focused window, Alt+Q closes, Alt+Shift+E quits.
+//   * layer-shell bars with exclusive-zone tiling reserve.
 
 #include <cassert>
 #include <csignal>
@@ -26,13 +31,19 @@
 
 // wlroots is a C library whose headers carry no `extern "C"` guards, so
 // force C linkage here. They also use C-only `static` array bounds (e.g. in
-// wlr_scene.h, wlr/render/color.h) which C++ rejects, so neutralize the
-// keyword for these headers only. Benign: it just drops `static` from
-// `static inline` helpers and `static const` constants, which remain valid.
+// wlr_scene.h, wlr/render/color.h) which C++ rejects, and `namespace` as a
+// struct field/parameter name (wlr_layer_shell_v1.h + its generated
+// protocol header), which is a reserved C++ keyword — so neutralize both
+// for these headers only. Benign: it just drops `static` from
+// `static inline` helpers and `static const` constants (still valid), and
+// renames the `namespace` identifiers (layout unchanged). Our own C++
+// below the matching #undefs is unaffected.
 #define static
+#define namespace _aquawm_namespace
 extern "C" {
 #include <wlr/backend.h>
 #include <wlr/backend/wayland.h>
+#include <wlr/interfaces/wlr_buffer.h>
 #include <wlr/render/allocator.h>
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/types/wlr_compositor.h>
@@ -40,17 +51,20 @@ extern "C" {
 #include <wlr/types/wlr_data_device.h>
 #include <wlr/types/wlr_input_device.h>
 #include <wlr/types/wlr_keyboard.h>
+#include <wlr/types/wlr_layer_shell_v1.h>
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_subcompositor.h>
 #include <wlr/types/wlr_xcursor_manager.h>
+#include <wlr/types/wlr_xdg_output_v1.h>
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/util/box.h>
 #include <wlr/util/log.h>
 }
 #undef static
+#undef namespace
 
 #include <algorithm>
 #include <vector>
@@ -58,6 +72,7 @@ extern "C" {
 #include <drm_fourcc.h>
 
 #include "config.hpp"
+#include "layers.hpp"
 #include "tiling.hpp"
 #include "wallpaper.hpp"
 
@@ -72,6 +87,10 @@ struct Output {
     struct wlr_scene_buffer *bg = nullptr; // wallpaper node (bottom layer)
     int bg_w = -1;
     int bg_h = -1;
+    // Tiling area after layer-shell exclusive zones (Phase 3b). Equals the
+    // full output box until arrange_layers runs.
+    struct wlr_box usable_area{};
+    bool usable_valid = false;
     struct wl_listener frame{};
     struct wl_listener destroy{};
 };
@@ -105,6 +124,20 @@ struct Keyboard {
     bool warned_no_state = false;
     struct wl_listener key{};
     struct wl_listener modifiers{};
+    struct wl_listener destroy{};
+};
+
+// Layer-shell bar surface (Phase 3b): a client bar (e.g. waybar) rendered
+// in protocol layer order. The scene helper (scene) owns map/unmap
+// visibility of the node; this wrapper owns configure (exclusive zone) and
+// its own lifetime. Input still goes to tiling views only.
+struct LayerSurface {
+    Server *server = nullptr;
+    struct wlr_layer_surface_v1 *layer = nullptr;
+    struct wlr_scene_layer_surface_v1 *scene = nullptr;
+    struct wl_listener map{};
+    struct wl_listener unmap{};
+    struct wl_listener commit{};
     struct wl_listener destroy{};
 };
 
@@ -144,6 +177,13 @@ struct Server {
     struct wlr_scene_output_layout *scene_layout = nullptr;
     struct wlr_output_layout *output_layout = nullptr;
     struct wlr_xdg_shell *xdg_shell = nullptr;
+    struct wlr_xdg_output_manager_v1 *xdg_output_manager = nullptr;
+    struct wlr_layer_shell_v1 *layer_shell = nullptr;
+    // One scene tree per protocol layer (Phase 3b), ordered under the scene
+    // root as background < bottom < views < top < overlay. Tiling views
+    // live in view_tree so focus raise_to_top never covers the top layers.
+    struct wlr_scene_tree *view_tree = nullptr;
+    struct wlr_scene_tree *layer_trees[4] = {nullptr, nullptr, nullptr, nullptr};
     struct wlr_cursor *cursor = nullptr;
     struct wlr_xcursor_manager *cursor_mgr = nullptr;
     struct wlr_seat *seat = nullptr;
@@ -162,10 +202,12 @@ struct Server {
     struct wl_listener new_output{};
     struct wl_listener new_input{};
     struct wl_listener new_toplevel{};
+    struct wl_listener new_layer_surface{};
     struct wl_listener request_cursor{};
     struct wl_listener backend_destroy{};
 
     std::vector<Output *> outputs;
+    std::vector<LayerSurface *> layers;
     // Front of the vector is topmost (most recently focused).
     std::vector<View *> views;
 
@@ -179,6 +221,8 @@ struct Server {
 
 void focus_view(Server *server, View *view);
 void drop_wallpaper(Server *server);
+void arrange(Server *server);
+void arrange_layers(Server *server);
 
 void spawn_terminal() {
     if (fork() == 0) {
@@ -206,13 +250,19 @@ View *view_at(Server *server, double lx, double ly) {
 
 // Tile all mapped, non-floating views of the active workspace using the
 // master-stack layout. Oldest window becomes master for a stable layout.
+// Tiling fills the output's usable area (full box minus layer-shell
+// exclusive zones, see arrange_layers), then applies gaps.
 void arrange(Server *server) {
     if (server->outputs.empty()) {
         return;
     }
+    Output *output = server->outputs.front();
     struct wlr_box area{};
-    wlr_output_layout_get_box(server->output_layout,
-        server->outputs.front()->wlr_output, &area);
+    if (output->usable_valid) {
+        area = output->usable_area;
+    } else {
+        wlr_output_layout_get_box(server->output_layout, output->wlr_output, &area);
+    }
     const int gaps = server->config.gaps;
     area.x += gaps;
     area.y += gaps;
@@ -399,8 +449,11 @@ void on_new_toplevel(struct wl_listener *listener, void *data) {
     View *view = new View();
     view->server = server;
     view->toplevel = toplevel;
-    view->scene_tree =
-        wlr_scene_xdg_surface_create(&server->scene->tree, toplevel->base);
+    // Tiling views live in view_tree so focus raise_to_top stays below the
+    // top/overlay layer trees (Phase 3b scene order).
+    struct wlr_scene_tree *view_parent =
+        server->view_tree != nullptr ? server->view_tree : &server->scene->tree;
+    view->scene_tree = wlr_scene_xdg_surface_create(view_parent, toplevel->base);
     wlr_scene_node_set_enabled(&view->scene_tree->node, false);
 
     view->map.notify = on_view_map;
@@ -413,6 +466,137 @@ void on_new_toplevel(struct wl_listener *listener, void *data) {
     wl_signal_add(&toplevel->events.destroy, &view->destroy);
 
     server->views.push_back(view);
+}
+
+// --- Layer-shell bars (Phase 3b) ------------------------------------------
+// Configure every layer surface on `output` overlay-first and shrink the
+// output's usable area by each mapped surface's positive exclusive zone.
+// The scene helper positions each node and folds the zone (+ margin) into
+// `usable` for the next surface, so stacked bars compose. Tiling then
+// fills what remains (see arrange). Unmapped surfaces never shrink.
+void output_arrange_layers(Server *server, Output *output) {
+    struct wlr_box full{};
+    wlr_output_layout_get_box(server->output_layout, output->wlr_output, &full);
+    struct wlr_box usable = full;
+    for (int layer = ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY;
+         layer >= ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND; --layer) {
+        for (LayerSurface *ls : server->layers) {
+            if (ls->layer->output != output->wlr_output) {
+                continue;
+            }
+            if ((int)ls->layer->current.layer != layer) {
+                continue;
+            }
+            wlr_scene_layer_surface_v1_configure(ls->scene, &full, &usable);
+        }
+    }
+    output->usable_area = usable;
+    output->usable_valid = true;
+}
+
+void arrange_layers(Server *server) {
+    for (Output *output : server->outputs) {
+        output_arrange_layers(server, output);
+    }
+    arrange(server);
+}
+
+void on_layer_map(struct wl_listener *listener, void * /*data*/) {
+    LayerSurface *ls = wl_container_of(listener, ls, map);
+    // NOTE: wlr_layer_surface_v1 has a `namespace` field, but `namespace`
+    // is a C++ keyword, so log the output name instead.
+    wlr_log(WLR_INFO, "layer surface mapped: layer=%d zone=%d output=%s",
+        (int)ls->layer->current.layer, ls->layer->current.exclusive_zone,
+        ls->layer->output != nullptr && ls->layer->output->name != nullptr
+            ? ls->layer->output->name
+            : "?");
+    arrange_layers(ls->server);
+}
+
+void on_layer_unmap(struct wl_listener *listener, void * /*data*/) {
+    LayerSurface *ls = wl_container_of(listener, ls, unmap);
+    arrange_layers(ls->server);
+}
+
+void on_layer_commit(struct wl_listener *listener, void * /*data*/) {
+    LayerSurface *ls = wl_container_of(listener, ls, commit);
+    Server *server = ls->server;
+    struct wlr_layer_surface_v1 *layer = ls->layer;
+    if (layer->current.committed == 0) {
+        return;
+    }
+    // A client may move between protocol layers; keep the scene node in
+    // the matching layer tree so render order stays correct.
+    if (layer->current.committed & WLR_LAYER_SURFACE_V1_STATE_LAYER) {
+        int want = (int)layer->current.layer;
+        if (want >= ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND &&
+            want <= ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY && ls->scene != nullptr) {
+            wlr_scene_node_reparent(&ls->scene->tree->node,
+                server->layer_trees[want]);
+        }
+    }
+    arrange_layers(server);
+}
+
+void on_layer_destroy(struct wl_listener *listener, void * /*data*/) {
+    LayerSurface *ls = wl_container_of(listener, ls, destroy);
+    Server *server = ls->server;
+    // The scene helper frees its own node via its destroy listener; drop
+    // only our wrapper and listeners here.
+    wl_list_remove(&ls->map.link);
+    wl_list_remove(&ls->unmap.link);
+    wl_list_remove(&ls->commit.link);
+    wl_list_remove(&ls->destroy.link);
+    auto it = std::find(server->layers.begin(), server->layers.end(), ls);
+    if (it != server->layers.end()) {
+        server->layers.erase(it);
+    }
+    delete ls;
+    arrange_layers(server);
+}
+
+void on_new_layer_surface(struct wl_listener *listener, void *data) {
+    Server *server = wl_container_of(listener, server, new_layer_surface);
+    struct wlr_layer_surface_v1 *layer =
+        static_cast<struct wlr_layer_surface_v1 *>(data);
+    // Layer clients may leave the output unassigned; pin to the primary
+    // output (single-output layout, same assumption as arrange).
+    if (layer->output == nullptr) {
+        if (server->outputs.empty()) {
+            wlr_log(WLR_ERROR,
+                "layer surface with no output and no outputs yet; ignoring");
+            return;
+        }
+        layer->output = server->outputs.front()->wlr_output;
+    }
+    // current.layer is already set from the creation request (wlroots
+    // assigns it before emitting new_surface).
+    int want = (int)layer->current.layer;
+    if (want < ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND ||
+        want > ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY) {
+        wlr_log(WLR_ERROR, "layer surface with invalid layer %d; ignoring", want);
+        return;
+    }
+    LayerSurface *ls = new LayerSurface();
+    ls->server = server;
+    ls->layer = layer;
+    ls->scene = wlr_scene_layer_surface_v1_create(server->layer_trees[want], layer);
+    if (ls->scene == nullptr) {
+        wlr_log(WLR_ERROR, "failed to create scene node for layer surface");
+        delete ls;
+        return;
+    }
+    ls->map.notify = on_layer_map;
+    wl_signal_add(&layer->surface->events.map, &ls->map);
+    ls->unmap.notify = on_layer_unmap;
+    wl_signal_add(&layer->surface->events.unmap, &ls->unmap);
+    ls->commit.notify = on_layer_commit;
+    wl_signal_add(&layer->surface->events.commit, &ls->commit);
+    ls->destroy.notify = on_layer_destroy;
+    wl_signal_add(&layer->events.destroy, &ls->destroy);
+    server->layers.push_back(ls);
+    wlr_log(WLR_INFO, "new layer surface: layer=%d output=%s", want,
+        layer->output->name != nullptr ? layer->output->name : "?");
 }
 
 View *focused_view(Server *server) {
@@ -772,6 +956,49 @@ void on_backend_destroy(struct wl_listener *listener, void * /*data*/) {
     wl_display_terminate(server->display);
 }
 
+// CPU-backed wallpaper buffer (last-resort upload path): a malloc'd XRGB
+// image exposed read-only via data_ptr. The GLES2 renderer uploads such
+// buffers with a plain CPU copy, which works on every driver — including
+// ones whose GBM buffers are neither mappable nor renderable (external-
+// only). Same pattern as wlroots' internal readonly_data_buffer.
+struct CpuImageBuffer {
+    struct wlr_buffer base;
+    uint8_t *pixels = nullptr; // XRGB8888, stride = width * 4, owned here
+};
+
+void cpu_image_buffer_destroy(struct wlr_buffer *wlr_buffer) {
+    struct CpuImageBuffer *self =
+        wl_container_of(wlr_buffer, self, base);
+    wlr_buffer_finish(wlr_buffer);
+    free(self->pixels);
+    free(self);
+}
+
+bool cpu_image_buffer_begin_data_ptr_access(struct wlr_buffer *wlr_buffer,
+    uint32_t flags, void **data, uint32_t *format, size_t *stride) {
+    struct CpuImageBuffer *self =
+        wl_container_of(wlr_buffer, self, base);
+    if ((flags & WLR_BUFFER_DATA_PTR_ACCESS_WRITE) != 0) {
+        return false; // immutable after creation; renderers only need READ
+    }
+    *data = self->pixels;
+    *format = DRM_FORMAT_XRGB8888;
+    *stride = static_cast<size_t>(wlr_buffer->width) * 4;
+    return true;
+}
+
+void cpu_image_buffer_end_data_ptr_access(struct wlr_buffer * /*wlr_buffer*/) {
+    // No-op: nothing to flush for plain malloc'd memory.
+}
+
+const struct wlr_buffer_impl cpu_image_buffer_impl = {
+    cpu_image_buffer_destroy,
+    nullptr, // get_dmabuf: CPU-only, no dmabuf
+    nullptr, // get_shm: CPU-only, no shm fd
+    cpu_image_buffer_begin_data_ptr_access,
+    cpu_image_buffer_end_data_ptr_access,
+};
+
 // GPU-side wallpaper upload for buffers that refuse CPU mapping (typical
 // for GBM/dmabuf on real hardware): push pixels into a texture, then blit
 // it into the destination buffer with a throwaway render pass.
@@ -798,13 +1025,51 @@ bool blit_wallpaper_gpu(Server *server, const uint8_t *rgba, int iw, int ih,
     return ok;
 }
 
+// Fill an allocator buffer with decoded RGBA pixels: a CPU memcpy when the
+// buffer is mappable (shm/pixman/dumb allocators), else a GPU blit through
+// the renderer (GBM/dmabuf buffers on real hardware generally refuse CPU
+// mapping). Returns false when neither path works for this buffer.
+bool fill_wallpaper_buffer(Server *server, struct wlr_buffer *buf,
+    const uint8_t *rgba, int iw, int ih) {
+    void *data = nullptr;
+    uint32_t format = 0;
+    size_t stride = 0;
+    bool mapped = wlr_buffer_begin_data_ptr_access(buf,
+        WLR_BUFFER_DATA_PTR_ACCESS_WRITE, &data, &format, &stride);
+    if (mapped && format != DRM_FORMAT_XRGB8888) {
+        wlr_buffer_end_data_ptr_access(buf);
+        mapped = false;
+    }
+    if (mapped) {
+        auto *px = static_cast<uint8_t *>(data);
+        for (int y = 0; y < ih; ++y) {
+            uint8_t *row = px + static_cast<std::size_t>(y) * stride;
+            const uint8_t *src = rgba + static_cast<std::size_t>(y) * iw * 4;
+            for (int x = 0; x < iw; ++x) {
+                row[4 * x + 0] = src[4 * x + 2];
+                row[4 * x + 1] = src[4 * x + 1];
+                row[4 * x + 2] = src[4 * x + 0];
+                row[4 * x + 3] = 0xFF;
+            }
+        }
+        wlr_buffer_end_data_ptr_access(buf);
+        return true;
+    }
+    return blit_wallpaper_gpu(server, rgba, iw, ih, buf);
+}
+
 // Decode the configured wallpaper and upload it once into a shared XRGB
 // allocator buffer. Remembers the last attempted path so a missing file
 // costs one open() instead of one per frame.
 //
-// Two upload paths, in order: a CPU memcpy when the buffer is mappable
-// (shm/pixman/dumb allocators), else a GPU blit through the renderer
-// (GBM/dmabuf buffers on real hardware generally refuse CPU mapping).
+// Modifier candidates, in order: LINEAR first (mappable on shm/dumb/Intel
+// GBM, so the previous behavior is unchanged there), then INVALID, which
+// makes GBM fall back to driver-default implicit allocation. Some drivers
+// (notably Nvidia proprietary) hand out LINEAR buffers that are neither
+// CPU-mappable nor renderable (external-only); the implicit buffer is
+// renderable, so the GPU blit path succeeds there. If both fail, a
+// malloc'd CPU buffer is used (always renderer-uploadable, never
+// scanout-able).
 // Anything else degrades to no background instead of crashing.
 bool upload_wallpaper(Server *server) {
     if (server->wallpaper.buffer != nullptr) {
@@ -823,29 +1088,45 @@ bool upload_wallpaper(Server *server) {
         wlr_log(WLR_ERROR, "wallpaper: %s", error.c_str());
         return false;
     }
-    static uint64_t mods[] = {DRM_FORMAT_MOD_LINEAR};
-    static struct wlr_drm_format fmt = {DRM_FORMAT_XRGB8888, 1, 1, mods};
-    struct wlr_buffer *buf =
-        wlr_allocator_create_buffer(server->allocator, iw, ih, &fmt);
+    static uint64_t mods_linear[] = {DRM_FORMAT_MOD_LINEAR};
+    static uint64_t mods_implicit[] = {DRM_FORMAT_MOD_INVALID};
+    static struct wlr_drm_format fmts[] = {
+        {DRM_FORMAT_XRGB8888, 1, 1, mods_linear},
+        {DRM_FORMAT_XRGB8888, 1, 1, mods_implicit},
+    };
+    struct wlr_buffer *buf = nullptr;
+    for (std::size_t i = 0; i < sizeof(fmts) / sizeof(fmts[0]); ++i) {
+        struct wlr_buffer *candidate = wlr_allocator_create_buffer(
+            server->allocator, iw, ih, &fmts[i]);
+        if (candidate == nullptr) {
+            continue;
+        }
+        if (fill_wallpaper_buffer(server, candidate, rgba.data(), iw, ih)) {
+            buf = candidate;
+            break;
+        }
+        wlr_buffer_drop(candidate);
+    }
     if (buf == nullptr) {
-        wlr_log(WLR_ERROR, "wallpaper: allocator refused %dx%d buffer", iw, ih);
-        return false;
-    }
-    void *data = nullptr;
-    uint32_t format = 0;
-    size_t stride = 0;
-    bool mapped = wlr_buffer_begin_data_ptr_access(buf,
-        WLR_BUFFER_DATA_PTR_ACCESS_WRITE, &data, &format, &stride);
-    if (mapped && format != DRM_FORMAT_XRGB8888) {
-        wlr_buffer_end_data_ptr_access(buf);
-        mapped = false;
-    }
-    if (mapped) {
-        auto *px = static_cast<uint8_t *>(data);
+        // Last resort: our own malloc'd buffer (always uploadable, never
+        // scanout-able). Converts RGBA decode output to XRGB in place.
+        struct CpuImageBuffer *cpu =
+            static_cast<struct CpuImageBuffer *>(calloc(1, sizeof(*cpu)));
+        const std::size_t stride = static_cast<std::size_t>(iw) * 4;
+        uint8_t *pixels = cpu != nullptr
+            ? static_cast<uint8_t *>(malloc(stride * static_cast<std::size_t>(ih)))
+            : nullptr;
+        if (pixels == nullptr) {
+            free(cpu);
+            wlr_log(WLR_ERROR,
+                "wallpaper: no usable %dx%d buffer (tried linear + implicit + cpu); skipping background",
+                iw, ih);
+            return false;
+        }
         for (int y = 0; y < ih; ++y) {
-            uint8_t *row = px + static_cast<std::size_t>(y) * stride;
+            uint8_t *row = pixels + static_cast<std::size_t>(y) * stride;
             const uint8_t *src =
-                rgba.data() + static_cast<std::size_t>(y) * iw * 4;
+                rgba.data() + static_cast<std::size_t>(y) * stride;
             for (int x = 0; x < iw; ++x) {
                 row[4 * x + 0] = src[4 * x + 2];
                 row[4 * x + 1] = src[4 * x + 1];
@@ -853,12 +1134,10 @@ bool upload_wallpaper(Server *server) {
                 row[4 * x + 3] = 0xFF;
             }
         }
-        wlr_buffer_end_data_ptr_access(buf);
-    } else if (!blit_wallpaper_gpu(server, rgba.data(), iw, ih, buf)) {
-        wlr_buffer_drop(buf);
-        wlr_log(WLR_ERROR,
-            "wallpaper: buffer is neither CPU-mappable nor GPU-blittable; skipping background");
-        return false;
+        cpu->pixels = pixels;
+        wlr_buffer_init(&cpu->base, &cpu_image_buffer_impl, iw, ih);
+        buf = &cpu->base;
+        wlr_log(WLR_INFO, "wallpaper: using CPU fallback buffer (%dx%d)", iw, ih);
     }
     server->wallpaper.buffer = buf;
     server->wallpaper.img_w = iw;
@@ -952,7 +1231,17 @@ void on_output_destroy(struct wl_listener *listener, void * /*data*/) {
     if (it != server->outputs.end()) {
         server->outputs.erase(it);
     }
+    // Keep layer surfaces pinned to a live output (or none) so arrange
+    // never dereferences the dying one.
+    struct wlr_output *fallback =
+        server->outputs.empty() ? nullptr : server->outputs.front()->wlr_output;
+    for (LayerSurface *ls : server->layers) {
+        if (ls->layer->output == output->wlr_output) {
+            ls->layer->output = fallback;
+        }
+    }
     delete output;
+    arrange_layers(server);
 }
 
 void on_new_output(struct wl_listener *listener, void *data) {
@@ -1000,7 +1289,16 @@ void on_new_output(struct wl_listener *listener, void *data) {
 
     wlr_scene_output_create(server->scene, wlr_output);
     set_default_cursor(server);
-    arrange(server);
+    // Full box until arrange_layers accounts for bars; adopt layer
+    // surfaces that arrived before any output existed.
+    wlr_output_layout_get_box(server->output_layout, wlr_output, &output->usable_area);
+    output->usable_valid = true;
+    for (LayerSurface *ls : server->layers) {
+        if (ls->layer->output == nullptr) {
+            ls->layer->output = wlr_output;
+        }
+    }
+    arrange_layers(server);
 }
 
 } // namespace
@@ -1075,6 +1373,44 @@ int main(int argc, char **argv) {
     server.new_toplevel.notify = on_new_toplevel;
     wl_signal_add(&server.xdg_shell->events.new_toplevel, &server.new_toplevel);
 
+    // Output descriptions for bar clients (waybar requires xdg-output).
+    // Tracks the output layout automatically; no listeners needed.
+    server.xdg_output_manager =
+        wlr_xdg_output_manager_v1_create(server.display, server.output_layout);
+    if (server.xdg_output_manager == nullptr) {
+        std::fprintf(stderr, "aquawm: failed to create xdg-output manager\n");
+        return 1;
+    }
+
+    // Layer-shell bars (Phase 3b, protocol v5 = vendored XML): one scene
+    // tree per protocol layer, created bottom-up so render order is
+    // background < bottom < views < top < overlay. Tiling views attach to
+    // view_tree, created between bottom and top.
+    server.layer_shell = wlr_layer_shell_v1_create(server.display, 5);
+    if (server.layer_shell == nullptr) {
+        std::fprintf(stderr, "aquawm: failed to create layer shell\n");
+        return 1;
+    }
+    for (int layer = ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND;
+         layer <= ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY; ++layer) {
+        // Tiling views render between the bottom and top layers: create
+        // view_tree after the bottom tree, before the top tree.
+        if (layer == ZWLR_LAYER_SHELL_V1_LAYER_TOP) {
+            server.view_tree = wlr_scene_tree_create(&server.scene->tree);
+            if (server.view_tree == nullptr) {
+                std::fprintf(stderr, "aquawm: failed to create view tree\n");
+                return 1;
+            }
+        }
+        server.layer_trees[layer] = wlr_scene_tree_create(&server.scene->tree);
+        if (server.layer_trees[layer] == nullptr) {
+            std::fprintf(stderr, "aquawm: failed to create layer tree %d\n", layer);
+            return 1;
+        }
+    }
+    server.new_layer_surface.notify = on_new_layer_surface;
+    wl_signal_add(&server.layer_shell->events.new_surface, &server.new_layer_surface);
+
     server.cursor = wlr_cursor_create();
     wlr_cursor_attach_output_layout(server.cursor, server.output_layout);
     server.cursor_mgr = wlr_xcursor_manager_create(nullptr, 24);
@@ -1130,6 +1466,7 @@ int main(int argc, char **argv) {
     wl_list_remove(&server.new_output.link);
     wl_list_remove(&server.new_input.link);
     wl_list_remove(&server.new_toplevel.link);
+    wl_list_remove(&server.new_layer_surface.link);
     wl_list_remove(&server.request_cursor.link);
     wl_list_remove(&server.cursor_events.motion.link);
     wl_list_remove(&server.cursor_events.motion_absolute.link);

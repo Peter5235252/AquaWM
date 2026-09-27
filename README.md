@@ -7,13 +7,13 @@ development, or on DRM/KMS on real hardware.
 ## Status
 
 Working: scene rendering, wallpaper backgrounds, master-stack tiling,
-workspaces, floating toggle, Lua config with hot-reload, nested backends
-under WSLg, installer for Arch/Fedora/NixOS.
+workspaces, floating toggle, Lua config with hot-reload, layer-shell bars
+with exclusive zone, nested backends under WSLg, installer for
+Arch/Fedora/NixOS.
 
-In progress: on NixOS (ThinkPad T480) aquawm boots to the wallpaper on
-bare metal, but keyboard input does not reach it yet, so keybindings,
-spawning terminals, and tiling cannot be exercised there. Under WSLg
-everything works. Tracking down the input path is the current focus.
+In progress: XWayland support for legacy X11 apps (Phase 3c). Bar
+pointer/keyboard input is not forwarded yet, so bars display and reserve
+space but are not clickable.
 
 Supported distros: **Arch Linux, Fedora and NixOS.** The installer and
 the dependency lists cover exactly these three; anything else is
@@ -251,8 +251,10 @@ cp examples/foot.ini ~/.config/foot/foot.ini
   workspaces, clean shutdown handling.
 - Phase 3a (done): embedded Lua config (`aquawm.lua`, hot-reload),
   wallpaper backgrounds, foot font fix.
-- Phase 3b (next): layer-shell bar support with exclusive zone.
-- Phase 3c: XWayland support for legacy X11 apps.
+- Phase 3b (done): layer-shell bar support with exclusive zone (e.g.
+  run `waybar` inside the session; a top bar reserves its strip and
+  tiling fills what remains. Bar input is not forwarded yet).
+- Phase 3c (next): XWayland support for legacy X11 apps.
 - Installer (done): one-liner `setup.sh` plus `install.sh` for Arch
   and Fedora, with package manifests and a `--testmode` dry run.
 

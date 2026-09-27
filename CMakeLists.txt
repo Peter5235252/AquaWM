@@ -20,6 +20,22 @@ pkg_check_modules(JPEG REQUIRED libjpeg)
 pkg_check_modules(PNG REQUIRED libpng)
 pkg_check_modules(DRM REQUIRED libdrm)
 
+# Layer-shell protocol (Phase 3b): wlroots' own layer-shell header includes
+# the generated server header, which is not shipped in install prefixes
+# (notably NixOS), so generate it at build time from the vendored XML
+# (exact wlroots 0.20.2 copy in protocol/). Same result on Arch/Fedora.
+find_program(WAYLAND_SCANNER wayland-scanner REQUIRED)
+set(LAYER_SHELL_XML ${CMAKE_CURRENT_SOURCE_DIR}/protocol/wlr-layer-shell-unstable-v1.xml)
+set(LAYER_SHELL_HEADER ${CMAKE_CURRENT_BINARY_DIR}/protocol/wlr-layer-shell-unstable-v1-protocol.h)
+add_custom_command(
+  OUTPUT ${LAYER_SHELL_HEADER}
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/protocol
+  COMMAND ${WAYLAND_SCANNER} server-header ${LAYER_SHELL_XML} ${LAYER_SHELL_HEADER}
+  DEPENDS ${LAYER_SHELL_XML}
+  VERBATIM
+)
+add_custom_target(layer-shell-protocol DEPENDS ${LAYER_SHELL_HEADER})
+
 add_executable(aquawm
   src/main.cpp
   src/config.cpp
@@ -34,6 +50,7 @@ target_include_directories(aquawm PRIVATE
   ${JPEG_INCLUDE_DIRS}
   ${PNG_INCLUDE_DIRS}
   ${DRM_INCLUDE_DIRS}
+  ${CMAKE_CURRENT_BINARY_DIR}/protocol
   src
 )
 
@@ -65,6 +82,9 @@ target_compile_options(aquawm PRIVATE
 
 # wlroots gates all of its headers behind this macro.
 target_compile_definitions(aquawm PRIVATE WLR_USE_UNSTABLE)
+
+# The generated layer-shell protocol header must exist before compiling.
+add_dependencies(aquawm layer-shell-protocol)
 
 # Pure-logic unit test for the tiling layout (no wlroots dependency).
 add_executable(test_tiling
@@ -117,6 +137,14 @@ target_link_libraries(test_wallpaper PRIVATE
 )
 target_compile_options(test_wallpaper PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME wallpaper COMMAND test_wallpaper)
+
+# Exclusive-zone geometry test (pure logic, no wlroots dependency).
+add_executable(test_layers
+  tests/test_layers.cpp
+)
+target_include_directories(test_layers PRIVATE src)
+target_compile_options(test_layers PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME layers COMMAND test_layers)
 
 include(GNUInstallDirs)
 install(TARGETS aquawm RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

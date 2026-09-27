@@ -51,6 +51,7 @@
           ./examples
           ./assets
           ./sessions
+          ./protocol
         ];
       };
     in
@@ -70,6 +71,7 @@
               cmake
               ninja
               pkg-config
+              wayland-scanner
             ];
 
             buildInputs = aquawmDeps pkgs;
@@ -101,6 +103,7 @@
             packages = with pkgs; [
               foot
               wayland-utils
+              waybar # Phase 3b manual test client (top bar + exclusive zone)
               gdb
             ];
             shellHook = ''
