@@ -156,6 +156,14 @@ target_include_directories(test_layers PRIVATE src)
 target_compile_options(test_layers PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME layers COMMAND test_layers)
 
+# Tiling layout geometry test (pure logic, no wlroots dependency).
+add_executable(test_layouts
+  tests/test_layouts.cpp
+)
+target_include_directories(test_layouts PRIVATE src)
+target_compile_options(test_layouts PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME layouts COMMAND test_layouts)
+
 # Warning-bar message/layout test (pure logic, no dependencies).
 add_executable(test_warnbar
   tests/test_warnbar.cpp

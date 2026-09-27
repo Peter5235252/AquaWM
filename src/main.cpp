@@ -597,9 +597,20 @@ void arrange(Server *server) {
             tiled.push_back(*it);
         }
     }
-    auto boxes = aquawm::master_stack(static_cast<int>(tiled.size()),
-        aquawm::Box{area.x, area.y, area.width, area.height},
-        server->config.nmaster, server->config.mfact);
+    std::vector<aquawm::Box> boxes;
+    const std::string &layout = server->config.layout;
+    aquawm::Box area_box{area.x, area.y, area.width, area.height};
+    if (layout == "dwindle") {
+        boxes = aquawm::dwindle(static_cast<int>(tiled.size()), area_box,
+            server->config.split_ratio);
+    } else if (layout == "grid") {
+        boxes = aquawm::grid(static_cast<int>(tiled.size()), area_box);
+    } else if (layout == "monocle") {
+        boxes = aquawm::monocle(static_cast<int>(tiled.size()), area_box);
+    } else {
+        boxes = aquawm::master_stack(static_cast<int>(tiled.size()), area_box,
+            server->config.nmaster, server->config.mfact);
+    }
     for (std::size_t i = 0; i < tiled.size(); ++i) {
         const AnyView &t = tiled[i];
         int w = boxes[i].w - 2 * gaps;
@@ -1251,6 +1262,18 @@ void run_action(Server *server, const aquawm::Keybind &bind) {
             any_raise_to_top(server, focused);
             arrange(server);
         }
+    } else if (a == "cycle-layout") {
+        const auto &names = aquawm::layout_names();
+        std::size_t idx = 0;
+        for (std::size_t i = 0; i < names.size(); ++i) {
+            if (names[i] == server->config.layout) {
+                idx = i;
+                break;
+            }
+        }
+        server->config.layout = names[(idx + 1) % names.size()];
+        wlr_log(WLR_INFO, "layout: %s", server->config.layout.c_str());
+        arrange(server);
     } else if (a == "workspace") {
         switch_workspace(server, bind.arg - 1);
     } else if (a == "move-to-workspace") {

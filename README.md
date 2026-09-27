@@ -221,6 +221,7 @@ WAYLAND_DISPLAY=wayland-1 kitty
 | `Super+Return`        | spawn terminal (`kitty`)      |
 | `Super+J` / `Super+K` | focus next / previous window  |
 | `Super+T`             | toggle floating on focused    |
+| `Super+L`             | cycle tiling layout           |
 | `Super+1` … `Super+4` | switch workspace              |
 | `Super+Shift+1` … `4` | move focused window + refocus |
 | `Super+Q`             | close focused window          |
@@ -252,6 +253,28 @@ background, cover-fit per output behind all windows; empty means
 `~/.config/aquawm/wallpaper.jpg`. Changing it and reloading (`Super+Shift+R`
 or `SIGHUP`) swaps it live. The shipped `assets/wallpaper.jpg` is the
 default - copy it next to your `aquawm.lua`.
+
+## Tiling layouts (Phase 4)
+
+Four layouts, picked with `layout` in `aquawm.lua` (`Super+L` cycles
+them live without reloading):
+
+```
+config = {
+    layout = "dwindle", -- master, dwindle, grid, monocle
+    split_ratio = 0.50, -- dwindle split fraction (0.10 .. 0.90)
+    mfact = 0.60,       -- master column width (master layout)
+    nmaster = 1,        -- master window count (master layout)
+}
+```
+
+- **master**: `nmaster` windows share the left column, the rest stack
+  on the right (`mfact` wide).
+- **dwindle** (Hyprland-inspired): every window splits the remaining
+  area — side-by-side when wider than tall, stacked otherwise — at
+  `split_ratio`. Oldest keeps the biggest piece.
+- **grid**: equal cells, partial last row stretched full width.
+- **monocle**: every window fullscreen, topmost showing.
 
 ## Fallback warning bar
 
@@ -314,6 +337,10 @@ NixOS).
 - Phase 3c (done): XWayland support for legacy X11 apps (lazy X server
   start on first X client, shared tiling/focus/float/fullscreen flows;
   override-redirect windows float).
+- Phase 4 (planned): fully programmable Lua API for AquaWM — window
+  rules (match on class/title, float/workspace effects), layout
+  selection per config, event hooks — plus more tiling layouts
+  (master, dwindle, grid, monocle) to choose from.
 - Installer (done): one-liner `setup.sh` plus `install.sh` for Arch
   and Fedora, with package manifests and a `--testmode` dry run.
 - Long-term (under consideration): once testing is solid and the core feature set is wrapped up, ditching wlroots and writing a new base from the ground up. No timeline on this, it's just on the table.
