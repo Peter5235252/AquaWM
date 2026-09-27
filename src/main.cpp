@@ -173,6 +173,11 @@ struct XView {
     int applied_h = 0;
     bool mapped = false;
     TileBorder border{};
+    // Surface-commit listener is wired at associate (the surface only
+    // exists then) and unwired at dissociate; commit_wired tracks it so a
+    // map/unmap cycle never double-adds and destroy never double-removes.
+    bool commit_wired = false;
+    struct wl_listener surface_commit{};
     struct wl_listener associate{};
     struct wl_listener dissociate{};
     struct wl_listener destroy{};
@@ -798,6 +803,9 @@ void on_view_commit(struct wl_listener *listener, void * /*data*/) {
         // Suggest a default size; the tiling phase will set this per layout.
         wlr_xdg_toplevel_set_size(view->toplevel, 640, 480);
     }
+    // Client acked a new size asynchronously (e.g. after drag-resize):
+    // reposition the focus border, which otherwise tracks stale geometry.
+    border_refresh(view->server);
 }
 
 void on_view_destroy(struct wl_listener *listener, void * /*data*/) {
@@ -861,6 +869,12 @@ void xview_update_floating(XView *xview) {
         xview->xsurface->override_redirect || xview->fullscreen;
 }
 
+void on_xview_surface_commit(struct wl_listener *listener, void * /*data*/) {
+    XView *xview = wl_container_of(listener, xview, surface_commit);
+    // Client acked a new size asynchronously: reposition the focus border.
+    border_refresh(xview->server);
+}
+
 void on_xview_associate(struct wl_listener *listener, void * /*data*/) {
     XView *xview = wl_container_of(listener, xview, associate);
     Server *server = xview->server;
@@ -876,6 +890,12 @@ void on_xview_associate(struct wl_listener *listener, void * /*data*/) {
     xview->workspace = server->active_workspace;
     xview->fullscreen = xview->xsurface->fullscreen;
     xview_update_floating(xview);
+    if (!xview->commit_wired) {
+        xview->surface_commit.notify = on_xview_surface_commit;
+        wl_signal_add(&xview->xsurface->surface->events.commit,
+            &xview->surface_commit);
+        xview->commit_wired = true;
+    }
     arrange(server);
     focus_xview(server, xview);
     wlr_log(WLR_INFO, "X11 window associated (title=%s fullscreen=%d)",
@@ -887,6 +907,10 @@ void on_xview_dissociate(struct wl_listener *listener, void * /*data*/) {
     XView *xview = wl_container_of(listener, xview, dissociate);
     Server *server = xview->server;
     xview->mapped = false;
+    if (xview->commit_wired) {
+        wl_list_remove(&xview->surface_commit.link);
+        xview->commit_wired = false;
+    }
     if (xview->scene_tree != nullptr) {
         wlr_scene_node_destroy(&xview->scene_tree->node);
         xview->scene_tree = nullptr;
@@ -913,6 +937,10 @@ void on_xview_destroy(struct wl_listener *listener, void * /*data*/) {
     wl_list_remove(&xview->request_resize.link);
     wl_list_remove(&xview->request_maximize.link);
     wl_list_remove(&xview->request_fullscreen.link);
+    if (xview->commit_wired) {
+        wl_list_remove(&xview->surface_commit.link);
+        xview->commit_wired = false;
+    }
     border_forget(AnyView{nullptr, xview});
     any_remove_tile(server, AnyView{nullptr, xview});
     if (xview->scene_tree != nullptr) {
