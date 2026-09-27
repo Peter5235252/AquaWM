@@ -184,28 +184,33 @@ Config default_config() {
     return c;
 }
 
-std::string default_config_path() {
+std::string config_base_dir() {
+    // XDG Base Directory: $XDG_CONFIG_HOME when set to an absolute path,
+    // otherwise $HOME/.config. Identical lookup on Arch, Fedora and
+    // NixOS; only the environment differs per machine.
+    const char *xdg = std::getenv("XDG_CONFIG_HOME");
+    if (xdg != nullptr && xdg[0] == '/') {
+        return xdg;
+    }
     const char *home = std::getenv("HOME");
     std::string base = (home != nullptr && home[0] != '\0') ? home : "/tmp";
-    return base + "/.config/aquawm/aquawm.lua";
+    return base + "/.config";
+}
+
+std::string default_config_path() {
+    return config_base_dir() + "/aquawm/aquawm.lua";
 }
 
 std::string default_wallpaper_path() {
-    const char *home = std::getenv("HOME");
-    std::string base = (home != nullptr && home[0] != '\0') ? home : "/tmp";
-    return base + "/.config/aquawm/wallpaper.jpg";
+    return config_base_dir() + "/aquawm/wallpaper.jpg";
 }
 
 std::string legacy_config_path() {
-    const char *home = std::getenv("HOME");
-    std::string base = (home != nullptr && home[0] != '\0') ? home : "/tmp";
-    return base + "/.config/tilewm/init.lua";
+    return config_base_dir() + "/tilewm/init.lua";
 }
 
 std::string legacy_wallpaper_path() {
-    const char *home = std::getenv("HOME");
-    std::string base = (home != nullptr && home[0] != '\0') ? home : "/tmp";
-    return base + "/.config/tilewm/wallpaper.jpg";
+    return config_base_dir() + "/tilewm/wallpaper.jpg";
 }
 
 std::string resolve_config_path(const std::string &explicit_path) {
