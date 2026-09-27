@@ -27,6 +27,7 @@
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <ctime>
 #include <linux/input-event-codes.h>
 // pthread.h before the keyword hacks below: glibc declares a C++ cleanup
@@ -429,8 +430,14 @@ void spawn_terminal() {
         execlp("kitty", "kitty", nullptr);
         execlp("foot", "foot", nullptr);
         execlp("weston-terminal", "weston-terminal", nullptr);
-        _exit(EXIT_FAILURE);
+        // Reached only when no terminal exists on PATH: loud, with the
+        // errno, instead of vanishing silently into _exit.
+        std::fprintf(stderr,
+            "aquawm: spawn-terminal: no kitty/foot/weston-terminal on PATH: %s\n",
+            std::strerror(errno));
+        _exit(127);
     }
+    wlr_log(WLR_INFO, "spawn-terminal requested (Alt+Return)");
 }
 
 void any_set_workspace(const AnyView &t, int ws) {
@@ -1916,6 +1923,13 @@ int main(int argc, char **argv) {
     server.seat = wlr_seat_create(server.display, "seat0");
     server.request_cursor.notify = on_request_cursor;
     wl_signal_add(&server.seat->events.request_set_cursor, &server.request_cursor);
+    // Advertise input capabilities up front. Without this the seat reports
+    // zero caps: clients can neither create keyboard/pointer objects nor
+    // receive input (kitty won't even map its window, foot looks frozen).
+    // Devices themselves attach/detach via new_input; the caps describe
+    // what this seat offers.
+    wlr_seat_set_capabilities(server.seat,
+        WL_SEAT_CAPABILITY_KEYBOARD | WL_SEAT_CAPABILITY_POINTER);
     if (server.xwayland != nullptr) {
         wlr_xwayland_set_seat(server.xwayland, server.seat);
     }
