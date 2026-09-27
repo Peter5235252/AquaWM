@@ -20,6 +20,8 @@ pkg_check_modules(JPEG REQUIRED libjpeg)
 pkg_check_modules(PNG REQUIRED libpng)
 pkg_check_modules(DRM REQUIRED libdrm)
 pkg_check_modules(XCB REQUIRED xcb xcb-ewmh xcb-icccm)
+pkg_check_modules(FREETYPE REQUIRED freetype2)
+pkg_check_modules(FONTCONFIG REQUIRED fontconfig)
 
 # Layer-shell protocol (Phase 3b): wlroots' own layer-shell header includes
 # the generated server header, which is not shipped in install prefixes
@@ -52,6 +54,8 @@ target_include_directories(aquawm PRIVATE
   ${PNG_INCLUDE_DIRS}
   ${DRM_INCLUDE_DIRS}
   ${XCB_INCLUDE_DIRS}
+  ${FREETYPE_INCLUDE_DIRS}
+  ${FONTCONFIG_INCLUDE_DIRS}
   ${CMAKE_CURRENT_BINARY_DIR}/protocol
   src
 )
@@ -64,6 +68,8 @@ target_link_directories(aquawm PRIVATE
   ${JPEG_LIBRARY_DIRS}
   ${PNG_LIBRARY_DIRS}
   ${DRM_LIBRARY_DIRS}
+  ${FREETYPE_LIBRARY_DIRS}
+  ${FONTCONFIG_LIBRARY_DIRS}
 )
 
 target_link_libraries(aquawm PRIVATE
@@ -74,6 +80,8 @@ target_link_libraries(aquawm PRIVATE
   ${JPEG_LIBRARIES}
   ${PNG_LIBRARIES}
   ${DRM_LIBRARIES}
+  ${FREETYPE_LIBRARIES}
+  ${FONTCONFIG_LIBRARIES}
 )
 
 target_compile_options(aquawm PRIVATE
@@ -147,6 +155,14 @@ add_executable(test_layers
 target_include_directories(test_layers PRIVATE src)
 target_compile_options(test_layers PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME layers COMMAND test_layers)
+
+# Warning-bar message/layout test (pure logic, no dependencies).
+add_executable(test_warnbar
+  tests/test_warnbar.cpp
+)
+target_include_directories(test_warnbar PRIVATE src)
+target_compile_options(test_warnbar PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME warnbar COMMAND test_warnbar)
 
 include(GNUInstallDirs)
 install(TARGETS aquawm RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

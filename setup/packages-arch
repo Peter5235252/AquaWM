@@ -16,6 +16,8 @@ libjpeg-turbo
 libpng
 libxcb
 xcb-util-wm
+freetype2
+fontconfig
 xorg-xwayland
 xterm
 xorg-xeyes

@@ -42,6 +42,8 @@
         pkgs.libpng
         pkgs.libxcb
         pkgs.libxcb-wm # xcb-ewmh + xcb-icccm for wlr/xwayland.h
+        pkgs.freetype # warning-bar text rasterization
+        pkgs.fontconfig # warning-bar font lookup
       ];
 
       aquawmSrc = {
