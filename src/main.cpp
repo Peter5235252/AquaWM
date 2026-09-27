@@ -773,9 +773,12 @@ void on_view_map(struct wl_listener *listener, void * /*data*/) {
     view->mapped = true;
     view->workspace = server->active_workspace;
     wlr_scene_node_set_enabled(&view->scene_tree->node, true);
-    wlr_log(WLR_INFO, "xdg toplevel mapped: app_id=%s ws=%d",
+    struct wlr_box geom = view->toplevel->base->geometry;
+    wlr_log(WLR_INFO,
+        "xdg toplevel mapped: app_id=%s ws=%d tile=(%d,%d) geom=(%d,%d %dx%d)",
         view->toplevel->app_id != nullptr ? view->toplevel->app_id : "?",
-        view->workspace);
+        view->workspace, view->x, view->y, geom.x, geom.y, geom.width,
+        geom.height);
     arrange(server);
     focus_view(server, view);
 }
