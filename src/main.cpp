@@ -1977,6 +1977,14 @@ void on_output_frame(struct wl_listener *listener, void * /*data*/) {
     }
     if (!wlr_output_commit_state(output->wlr_output, &state)) {
         wlr_log(WLR_ERROR, "output commit failed");
+    } else {
+        // Frame pacing: without this, clients never receive wl_surface.frame
+        // callbacks and stall after their initial burst (~2s: kitty's cursor,
+        // Firefox's animations, everything). The scene only builds state;
+        // delivery is the compositor's job.
+        struct timespec now{};
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        wlr_scene_output_send_frame_done(scene_output, &now);
     }
     wlr_output_state_finish(&state);
 }
