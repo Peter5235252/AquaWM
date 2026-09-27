@@ -260,14 +260,8 @@ cp examples/foot.ini ~/.config/foot/foot.ini
 
 ## Distro support, now and later
 
-AquaWM supports **Arch Linux and Fedora**, where every dependency comes
-from the official repositories (no AUR, no COPR), and **NixOS, which is
-supported but very alpha-stage**: it installs and builds through the
-flake today, gets tested on real hardware firsthand, and still has rough
-edges (see the NixOS notes above). Expect the NixOS path to keep moving
-fast and occasionally break while it matures.
+AquaWM is developed and tested on **NixOS first** — it installs and builds through the flake, runs on real hardware, and is where active development happens. Expect occasional rough edges as it matures fast.
 
-**Debian and Ubuntu are not guaranteed at all.** Their slower-moving
-release cycles ship wlroots and Wayland libraries far older than a current
-compositor needs, and backporting around that is not something this
-project will take on. If that ever changes, this section will say so.
+**Arch Linux and Fedora** are fully supported, with every dependency available from the official repositories — no AUR, no COPR needed.
+
+**Ubuntu and Debian are not supported and won't be.** Their release cycles ship wlroots and Wayland libraries too old for a current compositor, and this project won't take on backporting around that. If that ever changes, this section will say so.
