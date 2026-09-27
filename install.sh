@@ -8,7 +8,7 @@
 #   2. Detects Arch vs Fedora via /etc/os-release and installs every
 #      dependency from official repositories (no AUR, no COPR).
 #   3. Clones (or fast-forward updates) aquawm, configures, builds, tests.
-#   4. Installs example aquawm.lua, foot.ini and wallpaper into ~/.config,
+#   4. Installs example aquawm.lua, kitty.conf and wallpaper into ~/.config,
 #      backing up anything already there.
 #   5. Prints a tailored "what now" card (bare metal vs WSLg).
 #
@@ -442,7 +442,7 @@ install_file() {
 
 deploy_configs() {
     install_file "examples/aquawm.lua" "$HOME/.config/aquawm/aquawm.lua"
-    install_file "examples/foot.ini" "$HOME/.config/foot/foot.ini"
+    install_file "examples/kitty.conf" "$HOME/.config/kitty/kitty.conf"
     install_file "assets/wallpaper.jpg" "$HOME/.config/aquawm/wallpaper.jpg"
 }
 
@@ -501,7 +501,7 @@ aquawm is ready: $DEST/result/bin/aquawm
   Config:  ~/.config/aquawm/aquawm.lua   (Alt+Shift+R reloads it live)
 
 Keybindings: Alt+Return terminal | Alt+J/K focus | Alt+Space float |
-  Alt+1..4 workspaces | Alt+Shift+1..4 move | Alt+Q close | Alt+Shift+E quit
+  Alt+1..4 workspaces | Alt+Shift+1..4 move | Alt+Q close | Alt+M quit
 
 Notes: launch from a TTY (Ctrl+Alt+F3) so the DRM backend is picked; a
 normal TTY login provides the needed session permissions. This NixOS
@@ -514,11 +514,11 @@ EOF
 aquawm is ready: $BIN
   Run it:  ./run-wslg.sh          (inside WSLg: X11 backend, maximize freely)
            ./build/aquawm         (bare metal TTY or nested Wayland session)
-  Test:    WAYLAND_DISPLAY=wayland-N foot
+  Test:    WAYLAND_DISPLAY=wayland-N kitty
   Config:  ~/.config/aquawm/aquawm.lua   (Alt+Shift+R reloads it live)
 
 Keybindings: Alt+Return terminal | Alt+J/K focus | Alt+Space float |
-  Alt+1..4 workspaces | Alt+Shift+1..4 move | Alt+Q close | Alt+Shift+E quit
+  Alt+1..4 workspaces | Alt+Shift+1..4 move | Alt+Q close | Alt+M quit
 
 Notes: on bare metal, launch from a TTY (Ctrl+Alt+F3) so the DRM backend
 is picked; a normal TTY login provides the needed session permissions.

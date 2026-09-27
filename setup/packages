@@ -1,4 +1,4 @@
 # Shared packages for every supported distro (one per line).
 git
 gum
-foot
+kitty

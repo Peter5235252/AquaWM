@@ -8,12 +8,13 @@ development, or on DRM/KMS on real hardware.
 
 Working: scene rendering, wallpaper backgrounds, master-stack tiling,
 workspaces, floating toggle, Lua config with hot-reload, layer-shell bars
-with exclusive zone, nested backends under WSLg, installer for
+with exclusive zone, XWayland for legacy X11 apps (lazy start, tiling,
+focus, float, fullscreen), nested backends under WSLg, installer for
 Arch/Fedora/NixOS.
 
-In progress: XWayland support for legacy X11 apps (Phase 3c). Bar
-pointer/keyboard input is not forwarded yet, so bars display and reserve
-space but are not clickable.
+In progress: bar pointer/keyboard input is not forwarded yet, so bars
+display and reserve space but are not clickable. Next: NixOS module /
+home-manager story.
 
 Supported distros: **Arch Linux, Fedora and NixOS.** The installer and
 the dependency lists cover exactly these three; anything else is
@@ -51,7 +52,7 @@ The script detects Arch vs Fedora vs NixOS, installs system packages on
 Arch/Fedora (sudo is used only for that step — never run the script
 itself as root; NixOS needs no system packages since the flake provides
 the toolchain), clones or updates the source, builds, runs the test
-suite, and installs the example `aquawm.lua`, `foot.ini` and wallpaper
+suite, and installs the example `aquawm.lua`, `kitty.conf` and wallpaper
 into `~/.config` (existing files are backed up, never silently
 overwritten). It uses `gum` menus when available and plain prompts
 otherwise. Useful flags: `--yes` (non-interactive), `--no-config`
@@ -85,7 +86,7 @@ sudo dnf install gcc gcc-c++ cmake ninja-build pkgconf-pkg-config git \
   libinput-devel pixman-devel libseat-devel mesa-libEGL-devel \
   mesa-libGLES-devel libdrm-devel systemd-devel lua-devel \
   libjpeg-turbo-devel libpng-devel \
-  foot wayland-utils wlr-randr
+  kitty wayland-utils wlr-randr
 ```
 
 ## Dependencies (Arch Linux)
@@ -98,7 +99,7 @@ T480 and friends with Intel graphics.
 sudo pacman -S base-devel cmake ninja pkgconf git \
   wlroots0.20 wayland wayland-protocols libxkbcommon libinput libseat \
   mesa libdrm lua libjpeg-turbo libpng \
-  foot
+  kitty
 ```
 
 ## Run on real hardware
@@ -120,15 +121,16 @@ existing Wayland/X11 session works exactly like under WSLg.
    another session) and starts `./result/bin/aquawm`, falling back to
    `./build/aquawm` for non-Nix builds.
 3. Checklist, in the order things usually bite:
-   - `foot` installed (`nix profile install nixpkgs#foot`) — without it,
-     `Alt+Return` silently does nothing and the desktop looks dead.
+    - `kitty` installed (system package, or `nix profile install
+      nixpkgs#kitty`) — without it, `Alt+Return` silently does nothing
+      and the desktop looks dead.
    - Active logind session — a normal TTY login provides it; check with
      `loginctl` if input or DRM permission is denied.
    - Intel iGPU primary — if you can see the login prompt, modesetting
      already works.
    - `~/.config/aquawm/aquawm.lua` present — the installer deploys the
      example; without it you get built-in defaults.
-4. Quit with `Alt+Shift+E`. If the screen ever locks up, `Ctrl+Alt+F1/F2`
+4. Quit with `Alt+M`. If the screen ever locks up, `Ctrl+Alt+F1/F2`
    jumps back to your other session; aquawm releases the display on
    VT switch.
 
@@ -139,22 +141,41 @@ GDM, SDDM, LightDM (with a Wayland-capable greeter) and greetd+tuigreet
 all read the same `/usr/share/wayland-sessions/*.desktop` files
 (XDM/LXDM don't do Wayland and are out of scope). Two pieces make it work:
 
-- `sessions/aquawm.desktop` declares the session (`Exec=aquawm-session`).
+- `sessions/aquawm.desktop` declares the session (`Exec=aquawm-session`,
+  plus `DesktopNames=aquawm` to match the exported desktop name).
   The wrapper exports `XDG_CURRENT_DESKTOP=aquawm`, which is what portals
   and apps key off.
 - `sessions/aquawm-session` is a tiny wrapper that sets
   `XDG_CURRENT_DESKTOP=aquawm` and execs the binary from `PATH`, so one
-  file covers `/usr/local`, distro, and nix-profile installs.
+  file covers `/usr/local`, distro, and nix-profile installs. (On NixOS
+  the package wraps it with its own `bin` prefixed, so it also resolves
+  under a bare login-manager environment.)
 
 On Arch/Fedora the installer deploys both (binary via `cmake --install`
 to `/usr/local`, session file to `/usr/share/wayland-sessions`). On
-NixOS the flake package carries the session file — register it with:
+NixOS use the in-repo module instead of the one-liner:
 
 ```
-services.displayManager.sessionPackages = [ aquawm ];
+# system flake inputs:
+aquawm.url = "github:Peter5235252/AquaWM";
+# // or a local checkout while iterating:
+# aquawm.url = "path:/home/csemanpeter/Asztal/AquaWM";
+
+# system modules:
+inputs.aquawm.nixosModules.aquawm
+
+# system config:
+programs.aquawm.enable = true;
+# optionally preselect it: services.displayManager.defaultSession = "aquawm";
 ```
 
-and for greetd point tuigreet at the sessions directory, e.g.
+This registers the session file with `services.displayManager.sessionPackages`,
+which is what SDDM, Plasma Login Manager, GDM, ly and tuigreet read (NixOS
+has no `/usr/share/wayland-sessions`; check resolution with
+`ls $(nix eval --raw .#nixosConfigurations.<host>.config.services.displayManager.sessionData.desktops)/share/wayland-sessions`
+after rebuild — expect `aquawm.desktop` next to `plasma.desktop`).
+
+For greetd point tuigreet at the sessions directory, e.g.
 `--sessions ${config.services.displayManager.sessionData.desktops}/share/wayland-sessions`.
 
 ## Build
@@ -190,20 +211,20 @@ directly so backend autocreate can pick Wayland or DRM.
 It prints `WAYLAND_DISPLAY=wayland-1` (or similar). From another terminal:
 
 ```
-WAYLAND_DISPLAY=wayland-1 foot
+WAYLAND_DISPLAY=wayland-1 kitty
 ```
 
 ## Keybindings (Phase 2)
 
 | Keys                | Action                        |
 |---------------------|-------------------------------|
-| `Alt+Return`        | spawn terminal (`foot`)       |
+| `Alt+Return`        | spawn terminal (`kitty`)      |
 | `Alt+J` / `Alt+K`   | focus next / previous window  |
 | `Alt+Space`         | toggle floating on focused    |
 | `Alt+1` … `Alt+4`   | switch workspace              |
 | `Alt+Shift+1` … `4` | move focused window + refocus |
 | `Alt+Q`             | close focused window          |
-| `Alt+Shift+E`       | quit the compositor           |
+| `Alt+M`             | quit to login manager         |
 | click               | focus window                  |
 | `Alt+Left-drag`     | move window (floats it first) |
 | `Alt+Right-drag`    | resize window (floats it first) |
@@ -219,7 +240,7 @@ $EDITOR ~/.config/aquawm/aquawm.lua
 ```
 
 The file sets `config = { gaps, mfact, nmaster, workspaces }` and
-registers keys with `bind("Alt+Shift", "e", "quit")` (modifiers Alt, Ctrl,
+registers keys with `bind("Alt", "m", "quit")` (modifiers Alt, Ctrl,
 Shift, Super; key names are xkb keysyms; workspace actions take a 1-based
 number). Apply changes with `Alt+Shift+R`, with `kill -HUP <aquawm-pid>`,
 or by restarting. A custom path works too: `aquawm /path/to/aquawm.lua`.
@@ -233,16 +254,33 @@ background, cover-fit per output behind all windows; empty means
 or `SIGHUP`) swaps it live. The shipped `assets/wallpaper.jpg` is the
 default - copy it next to your `aquawm.lua`.
 
-## Terminal font (foot)
+## Terminal (kitty)
 
-foot warns when it falls back to proportional Noto Sans. Use a real
-monospace font:
+AquaWM spawns `kitty` on `Alt+Return` (falling back to `foot`, then
+`weston-terminal`). Example config:
 
 ```
-sudo dnf install dejavu-sans-mono-fonts
-mkdir -p ~/.config/foot
-cp examples/foot.ini ~/.config/foot/foot.ini
+mkdir -p ~/.config/kitty
+cp examples/kitty.conf ~/.config/kitty/kitty.conf
 ```
+
+## X11 apps (Phase 3c)
+
+Legacy X11 clients run through XWayland, which starts lazily on the first
+X connection (no X server process until you need one). X windows join the
+same tiling, workspace, focus, float and close flows as native windows;
+override-redirect windows (menus, tooltips) float, and fullscreen covers
+the usable area. Try it nested:
+
+```
+WAYLAND_DISPLAY=wayland-1 kitty   # native, for comparison
+DISPLAY=:1 xterm                  # X11 (display number from the log line
+DISPLAY=:1 xeyes                  # "Starting Xwayland on :N")
+```
+
+The X server binary must be on `PATH` (`xorg-xwayland` on Arch,
+`xorg-x11-server-Xwayland` on Fedora, `nixpkgs#xwayland` / dev shell on
+NixOS).
 
 ## Roadmap
 
@@ -250,11 +288,13 @@ cp examples/foot.ini ~/.config/foot/foot.ini
 - Phase 2 (done): master-stack tiling, focus cycling, floating toggle,
   workspaces, clean shutdown handling.
 - Phase 3a (done): embedded Lua config (`aquawm.lua`, hot-reload),
-  wallpaper backgrounds, foot font fix.
+  wallpaper backgrounds, terminal font fix.
 - Phase 3b (done): layer-shell bar support with exclusive zone (e.g.
   run `waybar` inside the session; a top bar reserves its strip and
   tiling fills what remains. Bar input is not forwarded yet).
-- Phase 3c (next): XWayland support for legacy X11 apps.
+- Phase 3c (done): XWayland support for legacy X11 apps (lazy X server
+  start on first X client, shared tiling/focus/float/fullscreen flows;
+  override-redirect windows float).
 - Installer (done): one-liner `setup.sh` plus `install.sh` for Arch
   and Fedora, with package manifests and a `--testmode` dry run.
 - Long-term (under consideration): once testing is solid and the core feature set is wrapped up, ditching wlroots and writing a new base from the ground up. No timeline on this, it's just on the table.

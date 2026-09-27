@@ -16,9 +16,8 @@ bind("Alt", "j", "focus-next")
 bind("Alt", "k", "focus-prev")
 bind("Alt", "space", "toggle-floating")
 bind("Alt", "q", "close")
-bind("Alt+Shift", "e", "quit")
+bind("Alt", "m", "quit") -- back to the login manager (the only quit bind)
 bind("Alt+Shift", "r", "reload-config")
-bind("Ctrl+Alt", "q", "quit")
 
 for i = 1, 4 do
     bind("Alt", tostring(i), "workspace", i)
