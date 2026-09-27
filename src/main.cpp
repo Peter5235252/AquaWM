@@ -1188,6 +1188,9 @@ int on_reload_signal(int /*signal_number*/, void *data) {
 void on_keyboard_key(struct wl_listener *listener, void *data) {
     Keyboard *kb = wl_container_of(listener, kb, key);
     Server *server = kb->server;
+    if (server->backend_gone) {
+        return; // tearing down: the seat may be half-destroyed
+    }
     struct wlr_keyboard_key_event *event =
         static_cast<struct wlr_keyboard_key_event *>(data);
 
@@ -1217,6 +1220,9 @@ void on_keyboard_key(struct wl_listener *listener, void *data) {
 
 void on_keyboard_modifiers(struct wl_listener *listener, void * /*data*/) {
     Keyboard *kb = wl_container_of(listener, kb, modifiers);
+    if (kb->server->backend_gone) {
+        return;
+    }
     wlr_seat_set_keyboard(kb->server->seat, kb->kbd);
     wlr_seat_keyboard_notify_modifiers(kb->server->seat, &kb->kbd->modifiers);
 }
@@ -1281,6 +1287,9 @@ void set_default_cursor(Server *server) {
 // Shared tail of both motion handlers: drive an active drag, otherwise
 // forward to the seat and restore the default cursor off-client.
 void cursor_process_position(Server *server, uint32_t time_msec) {
+    if (server->backend_gone) {
+        return; // tearing down: the seat may be half-destroyed
+    }
     if (server->cursor_mode != CursorMode::Passthrough && server->has_grab) {
         const AnyView t = server->grabbed_tile;
         const int dx =
@@ -1350,6 +1359,9 @@ void on_cursor_motion_absolute(struct wl_listener *listener, void *data) {
 void on_cursor_button(struct wl_listener *listener, void *data) {
     CursorEvents *ce = wl_container_of(listener, ce, button);
     Server *server = ce->server;
+    if (server->backend_gone) {
+        return; // tearing down: the seat may be half-destroyed
+    }
     auto *event = static_cast<struct wlr_pointer_button_event *>(data);
     wlr_seat_pointer_notify_button(server->seat, event->time_msec, event->button,
         event->state);
@@ -1381,6 +1393,9 @@ void on_cursor_button(struct wl_listener *listener, void *data) {
 void on_cursor_axis(struct wl_listener *listener, void *data) {
     CursorEvents *ce = wl_container_of(listener, ce, axis);
     Server *server = ce->server;
+    if (server->backend_gone) {
+        return;
+    }
     auto *event = static_cast<struct wlr_pointer_axis_event *>(data);
     wlr_seat_pointer_notify_axis(server->seat, event->time_msec, event->orientation,
         event->delta, event->delta_discrete, event->source,
@@ -1389,6 +1404,9 @@ void on_cursor_axis(struct wl_listener *listener, void *data) {
 
 void on_cursor_frame(struct wl_listener *listener, void * /*data*/) {
     CursorEvents *ce = wl_container_of(listener, ce, frame);
+    if (ce->server->backend_gone) {
+        return;
+    }
     wlr_seat_pointer_notify_frame(ce->server->seat);
 }
 
@@ -1946,6 +1964,10 @@ int main(int argc, char **argv) {
         std::fprintf(stderr, "aquawm: failed to create Wayland socket\n");
         return 1;
     }
+    // Spawned clients (Alt+Return terminal, XWayland) inherit our
+    // environment: point them at our socket, not at whatever display we
+    // were started from (matters nested; bare metal is usually wayland-0).
+    setenv("WAYLAND_DISPLAY", server.socket, 1);
     std::fprintf(stderr, "aquawm: running on WAYLAND_DISPLAY=%s\n", server.socket);
 
     if (!wlr_backend_start(server.backend)) {

@@ -21,4 +21,10 @@ if [ -z "$XKB_CONFIG_ROOT" ] && [ -d /run/current-system/sw/share/X11/xkb ]; the
     export XKB_CONFIG_ROOT=/run/current-system/sw/share/X11/xkb
 fi
 
-exec aquawm "$@"
+# Compositor and client output (spawn errors, kitty GPU errors) goes to
+# a per-login file: display managers do not forward session stderr
+# anywhere debuggable, and without this a failing session is a black
+# screen with no trace. Overwritten on every login (last session only).
+logdir="${XDG_DATA_HOME:-$HOME/.local/share}/aquawm"
+mkdir -p "$logdir" 2>/dev/null
+exec aquawm "$@" 2>"$logdir/session.log"
