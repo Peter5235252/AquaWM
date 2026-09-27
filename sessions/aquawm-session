@@ -1,11 +1,12 @@
 #!/bin/sh
 # aquawm-session: login-manager entry point for AquaWM.
 #
-# Display managers (GDM, SDDM, LightDM, greetd) run the Exec line of
-# /usr/share/wayland-sessions/aquawm.desktop, which points here. Using a
-# wrapper instead of the binary keeps one file working for /usr/local,
-# distro package, and nix profile installs alike: aquawm just needs to
-# be on PATH.
+# Display managers (GDM, SDDM, Plasma Login Manager, ly, greetd/tuigreet)
+# run the Exec line of the aquawm.desktop session file, which points here.
+# Using a wrapper instead of the binary keeps one file working for
+# /usr/local, distro package, and nix profile installs alike: aquawm just
+# needs to be on PATH (on NixOS the package wraps this script with its own
+# bin dir prefixed, so it resolves even under a bare DM environment).
 #
 # No arguments are expected; extra arguments (like a config path) still
 # pass through to the compositor if a manager ever supplies them.
