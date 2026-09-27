@@ -362,9 +362,13 @@ void any_set_fullscreen(const AnyView &t, bool fullscreen) {
 
 // Current tile box in layout coordinates (for hit-testing and grabs).
 struct wlr_box any_box(const AnyView &t) {
+    // Tile box: position plus live client size. Clients with nonzero
+    // window-geometry offsets (kitty, Firefox CSD) report them separately;
+    // any_set_pos compensates the scene node, so the box always matches
+    // the pixels on screen.
     if (t.v != nullptr) {
         struct wlr_box geom = t.v->toplevel->base->geometry;
-        return {t.v->x + geom.x, t.v->y + geom.y, geom.width, geom.height};
+        return {t.v->x, t.v->y, geom.width, geom.height};
     }
     // Prefer the live surface size: cell-granular X clients (xterm) render
     // smaller than the last configured size, and hit-testing the stale
@@ -384,11 +388,15 @@ void any_set_pos(const AnyView &t, int x, int y) {
     if (t.v != nullptr) {
         t.v->x = x;
         t.v->y = y;
+        // The window rect lives at geometry offset inside the surface:
+        // shift the node so geometry lands exactly on the tile.
+        struct wlr_box geom = t.v->toplevel->base->geometry;
+        wlr_scene_node_set_position(&tree->node, x - geom.x, y - geom.y);
     } else {
         t.x->x = x;
         t.x->y = y;
+        wlr_scene_node_set_position(&tree->node, x, y);
     }
-    wlr_scene_node_set_position(&tree->node, x, y);
 }
 
 void any_commit_size(const AnyView &t, int w, int h) {
@@ -480,17 +488,66 @@ bool any_valid(const AnyView &t) {
     return t.v != nullptr || t.x != nullptr;
 }
 
-bool tile_at(Server *server, double lx, double ly, AnyView &hit) {
+// Pixel-accurate hit test (tinywl-style): ask the scene which surface is
+// under the cursor instead of doing box math. Handles nonzero window
+// geometry, subsurfaces and popups; wallpaper, warnbar and layer bars are
+// not tiles and never hit. Returns the tile plus the surface and its
+// surface-local coordinates.
+bool tile_at(Server *server, double lx, double ly, AnyView &hit,
+    struct wlr_surface **surface, double *sx, double *sy) {
+    if (server->view_tree == nullptr) {
+        return false;
+    }
+    double nx = 0.0, ny = 0.0;
+    struct wlr_scene_node *node = wlr_scene_node_at(
+        &server->scene->tree.node, lx, ly, &nx, &ny);
+    if (node == nullptr) {
+        return false;
+    }
+    // Ascend to the direct child of view_tree; anything else is not a tile.
+    struct wlr_scene_node *child = node;
+    while (child->parent != nullptr && child->parent != server->view_tree) {
+        child = &child->parent->node;
+        if (child == &server->scene->tree.node) {
+            return false;
+        }
+    }
+    if (child->parent != server->view_tree) {
+        return false;
+    }
     for (const AnyView &t : server->tiles) {
         if (!any_mapped(t) || any_workspace(t) != server->active_workspace) {
             continue;
         }
-        struct wlr_box box = any_box(t);
-        if (lx >= box.x && lx < box.x + box.width && ly >= box.y &&
-            ly < box.y + box.height) {
-            hit = t;
-            return true;
+        if (any_tree(t) == nullptr || &any_tree(t)->node != child) {
+            continue;
         }
+        struct wlr_surface *s = nullptr;
+        if (node->type == WLR_SCENE_NODE_BUFFER) {
+            struct wlr_scene_surface *ss =
+                wlr_scene_surface_try_from_buffer(
+                    wlr_scene_buffer_from_node(node));
+            if (ss != nullptr) {
+                s = ss->surface;
+            }
+        }
+        if (s == nullptr) {
+            s = any_surface(t);
+        }
+        if (s == nullptr) {
+            return false;
+        }
+        hit = t;
+        if (surface != nullptr) {
+            *surface = s;
+        }
+        if (sx != nullptr) {
+            *sx = nx;
+        }
+        if (sy != nullptr) {
+            *sy = ny;
+        }
+        return true;
     }
     return false;
 }
@@ -701,6 +758,11 @@ void on_view_commit(struct wl_listener *listener, void * /*data*/) {
         // Suggest a default size; the tiling phase will set this per layout.
         wlr_xdg_toplevel_set_size(view->toplevel, 640, 480);
     }
+    // Clients can move their window geometry at any commit: keep the node
+    // aligned so geometry keeps landing on the tile (no-op when unchanged).
+    struct wlr_box geom = view->toplevel->base->geometry;
+    wlr_scene_node_set_position(&view->scene_tree->node, view->x - geom.x,
+        view->y - geom.y);
 }
 
 void on_view_destroy(struct wl_listener *listener, void * /*data*/) {
@@ -1364,14 +1426,8 @@ void cursor_process_position(Server *server, uint32_t time_msec) {
     AnyView hit{};
     struct wlr_surface *surface = nullptr;
     double sx = 0.0, sy = 0.0;
-    if (tile_at(server, server->cursor->x, server->cursor->y, hit)) {
-        surface = any_surface(hit);
-        if (surface != nullptr) {
-            struct wlr_box box = any_box(hit);
-            sx = server->cursor->x - box.x;
-            sy = server->cursor->y - box.y;
-        }
-    }
+    tile_at(server, server->cursor->x, server->cursor->y, hit, &surface, &sx,
+        &sy);
     if (surface != nullptr) {
         wlr_seat_pointer_notify_enter(server->seat, surface, sx, sy);
         wlr_seat_pointer_notify_motion(server->seat, time_msec, sx, sy);
@@ -1436,7 +1492,10 @@ void on_cursor_button(struct wl_listener *listener, void *data) {
         event->state);
     if (event->state == WL_POINTER_BUTTON_STATE_PRESSED) {
         AnyView hit{};
-        if (tile_at(server, server->cursor->x, server->cursor->y, hit)) {
+        struct wlr_surface *surface = nullptr;
+        double sx = 0.0, sy = 0.0;
+        if (tile_at(server, server->cursor->x, server->cursor->y, hit,
+                &surface, &sx, &sy)) {
             struct wlr_box box = any_box(hit);
             const char *name = "?";
             if (hit.v != nullptr && hit.v->toplevel->app_id != nullptr) {
@@ -1447,8 +1506,7 @@ void on_cursor_button(struct wl_listener *listener, void *data) {
             wlr_log(WLR_INFO,
                 "pointer press: cursor=(%.0f,%.0f) hit=%s box=(%d,%d %dx%d) local=(%.0f,%.0f)",
                 server->cursor->x, server->cursor->y, name, box.x, box.y,
-                box.width, box.height, server->cursor->x - box.x,
-                server->cursor->y - box.y);
+                box.width, box.height, sx, sy);
             focus_any(server, hit);
         } else {
             wlr_log(WLR_INFO, "pointer press: cursor=(%.0f,%.0f) hit=none",
