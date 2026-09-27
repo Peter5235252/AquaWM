@@ -484,14 +484,15 @@ void border_place(TileBorder *b, int x, int y, int w, int h) {
     if (b == nullptr || b->tree == nullptr) {
         return;
     }
-    wlr_scene_node_set_position(&b->top->node, x - BORDER_W, y - BORDER_W);
-    wlr_scene_rect_set_size(b->top, w + 2 * BORDER_W, BORDER_W);
-    wlr_scene_node_set_position(&b->bottom->node, x - BORDER_W, y + h);
-    wlr_scene_rect_set_size(b->bottom, w + 2 * BORDER_W, BORDER_W);
-    wlr_scene_node_set_position(&b->left->node, x - BORDER_W, y);
-    wlr_scene_rect_set_size(b->left, BORDER_W, h);
-    wlr_scene_node_set_position(&b->right->node, x + w, y);
-    wlr_scene_rect_set_size(b->right, BORDER_W, h);
+    // Hyprland-style: outline sits ON the window boundary, not outside it.
+    wlr_scene_node_set_position(&b->top->node, x, y);
+    wlr_scene_rect_set_size(b->top, w, BORDER_W);
+    wlr_scene_node_set_position(&b->bottom->node, x, y + h - BORDER_W);
+    wlr_scene_rect_set_size(b->bottom, w, BORDER_W);
+    wlr_scene_node_set_position(&b->left->node, x, y + BORDER_W);
+    wlr_scene_rect_set_size(b->left, BORDER_W, h - 2 * BORDER_W);
+    wlr_scene_node_set_position(&b->right->node, x + w - BORDER_W, y + BORDER_W);
+    wlr_scene_rect_set_size(b->right, BORDER_W, h - 2 * BORDER_W);
 }
 
 // Show the border on the keyboard-focused tile only; hide everywhere else.

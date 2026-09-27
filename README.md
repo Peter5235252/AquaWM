@@ -229,7 +229,7 @@ WAYLAND_DISPLAY=wayland-1 kitty
 | `Super+Left-drag`     | move window (floats it first) |
 | `Super+Right-drag`    | resize window (floats it first) |
 
-The focused window gets a blue border; it tracks moves, resizes and
+The focused window gets a blue border drawn on its edge; it tracks moves, resizes and
 workspace switches, and shows on floating and fullscreen windows too.
 
 ## Configuration (Phase 3a)
