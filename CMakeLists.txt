@@ -43,6 +43,7 @@ add_executable(aquawm
   src/main.cpp
   src/config.cpp
   src/wallpaper.cpp
+  src/xwayland_ffi.c
 )
 
 target_include_directories(aquawm PRIVATE
@@ -163,6 +164,14 @@ add_executable(test_layouts
 target_include_directories(test_layouts PRIVATE src)
 target_compile_options(test_layouts PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME layouts COMMAND test_layouts)
+
+# Window-rule matcher test (pure logic, no wlroots dependency).
+add_executable(test_rules
+  tests/test_rules.cpp
+)
+target_include_directories(test_rules PRIVATE src)
+target_compile_options(test_rules PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME rules COMMAND test_rules)
 
 # Warning-bar message/layout test (pure logic, no dependencies).
 add_executable(test_warnbar

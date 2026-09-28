@@ -297,6 +297,18 @@ config = {
 - **grid**: equal cells, partial last row stretched full width.
 - **monocle**: every window fullscreen, topmost showing.
 
+## Window rules
+
+Rules run top to bottom when a window maps; later matches win. Any
+match field may be omitted (wildcard); matching is substring-based.
+`xwayland` matches X11 clients (whose app id is the X11 class).
+
+```
+rule({ match = { app_id = "firefox" }, workspace = 2 })
+rule({ match = { title = "Picture-in-Picture" }, float = true })
+rule({ match = { xwayland = true }, float = true })
+```
+
 ## Fallback warning bar
 
 With no valid `aquawm.lua` (missing or broken file), the compositor runs

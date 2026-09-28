@@ -8,6 +8,8 @@
 #include <string>
 #include <vector>
 
+#include "rules.hpp"
+
 namespace aquawm {
 
 // Modifier bits for Keybind::mods (mapped to WLR_MODIFIER_* by main.cpp).
@@ -34,6 +36,7 @@ struct Config {
     float split_ratio = 0.5f; // dwindle split fraction
     std::string terminal = "kitty"; // spawned on Super+Return
     std::vector<Keybind> keys;
+    std::vector<Rule> rules; // evaluated at map time, in file order
 };
 
 // Layout names arrange() understands, in cycle order.

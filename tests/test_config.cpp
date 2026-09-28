@@ -236,6 +236,44 @@ int main() {
         std::remove(path.c_str());
     }
 
+    // rule() parses match/effects; errors fail the load loudly.
+    {
+        fs::path path =
+            fs::temp_directory_path() / "aquawm-rules-test.lua";
+        {
+            std::ofstream f(path);
+            f << "rule({ match = { app_id = \"firefox\" }, workspace = 2 })\n"
+              << "rule({ match = { xwayland = true }, float = true })\n";
+        }
+        Config c = aquawm::default_config();
+        std::string err;
+        CHECK(aquawm::load_config_file(path.c_str(), c, err));
+        CHECK(c.rules.size() == 2);
+        CHECK(c.rules[0].match.app_id == "firefox");
+        CHECK(!c.rules[0].floating.has_value());
+        CHECK(c.rules[0].workspace == 2);
+        CHECK(c.rules[1].match.xwayland.has_value());
+        CHECK(c.rules[1].match.xwayland.value() == true);
+        CHECK(c.rules[1].floating.has_value());
+        CHECK(c.rules[1].floating.value() == true);
+        std::remove(path.c_str());
+    }
+
+    // Bad rules fail loudly: wrong field types, bad workspace.
+    {
+        fs::path path =
+            fs::temp_directory_path() / "aquawm-badrules-test.lua";
+        {
+            std::ofstream f(path);
+            f << "rule({ match = { app_id = 42 }, float = true })\n";
+        }
+        Config c = aquawm::default_config();
+        std::string err;
+        CHECK(!aquawm::load_config_file(path.c_str(), c, err));
+        CHECK(!err.empty());
+        std::remove(path.c_str());
+    }
+
     if (saved_xdg != nullptr) {
         setenv("XDG_CONFIG_HOME", saved_xdg, 1);
     }

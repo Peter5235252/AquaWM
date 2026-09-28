@@ -89,6 +89,13 @@ extern "C" {
 #include "wallpaper.hpp"
 #include "warnbar.hpp"
 
+extern "C" {
+// wlr_xwayland_surface.class is unnameable in C++ (reserved keyword);
+// these C helpers bridge it.
+const char *aquawm_xwayland_class(const struct wlr_xwayland_surface *surface);
+const char *aquawm_xwayland_title(const struct wlr_xwayland_surface *surface);
+}
+
 // freetype has proper extern "C" guards; include normally (needs the
 // freetype2/pkg-config include dirs, wired in CMakeLists.txt). fontconfig
 // locates a monospace font at runtime on every distro (NixOS scatters
@@ -304,6 +311,24 @@ void focus_xview(Server *server, XView *xview);
 void drop_wallpaper(Server *server);
 void arrange(Server *server);
 void arrange_layers(Server *server);
+
+// Apply matching window rules (file order, later wins): floating and/or
+// target workspace. Runs before arrange+focus so tiled windows land in
+// the right layout immediately.
+void apply_rules(Server *server, const std::string &app_id,
+    const std::string &title, bool is_xwayland, bool &floating, int &workspace) {
+    for (const aquawm::Rule &rule : server->config.rules) {
+        if (!aquawm::rule_matches(rule, app_id, title, is_xwayland)) {
+            continue;
+        }
+        if (rule.floating.has_value()) {
+            floating = rule.floating.value();
+        }
+        if (rule.workspace >= 1 && rule.workspace <= server->config.workspaces) {
+            workspace = rule.workspace - 1;
+        }
+    }
+}
 void ensure_warnbar(Server *server, Output *output);
 void drop_warnbars(Server *server);
 bool warn_bar_active(Server *server);
@@ -756,6 +781,14 @@ void on_view_map(struct wl_listener *listener, void * /*data*/) {
     Server *server = view->server;
     view->mapped = true;
     view->workspace = server->active_workspace;
+    {
+        const char *app_id =
+            view->toplevel->app_id != nullptr ? view->toplevel->app_id : "";
+        const char *title =
+            view->toplevel->title != nullptr ? view->toplevel->title : "";
+        apply_rules(server, app_id, title, false, view->floating,
+            view->workspace);
+    }
     wlr_scene_node_set_enabled(&view->scene_tree->node, true);
     struct wlr_box geom = view->toplevel->base->geometry;
     wlr_log(WLR_INFO,
@@ -869,6 +902,13 @@ void on_xview_associate(struct wl_listener *listener, void * /*data*/) {
     }
     xview->mapped = true;
     xview->workspace = server->active_workspace;
+    {
+        const char *cls = aquawm_xwayland_class(xview->xsurface);
+        const char *title = aquawm_xwayland_title(xview->xsurface);
+        apply_rules(server, cls != nullptr ? cls : "",
+            title != nullptr ? title : "", true, xview->floating,
+            xview->workspace);
+    }
     xview->fullscreen = xview->xsurface->fullscreen;
     xview_update_floating(xview);
     arrange(server);

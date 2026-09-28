@@ -118,6 +118,68 @@ int l_bind(lua_State *L) {
     return 0;
 }
 
+// rule({ match = {...}, float = ..., workspace = N }) exposed to Lua.
+// Destination vector passed as lightuserdata upvalue, like l_bind.
+int l_rule(lua_State *L) {
+    auto *out = static_cast<std::vector<Rule> *>(
+        lua_touserdata(L, lua_upvalueindex(1)));
+    if (!lua_istable(L, 1)) {
+        return luaL_error(L, "rule: expected a table");
+    }
+    Rule rule;
+    lua_getfield(L, 1, "match");
+    if (!lua_isnoneornil(L, -1)) {
+        if (!lua_istable(L, -1)) {
+            return luaL_error(L, "rule: match must be a table");
+        }
+        lua_getfield(L, -1, "app_id");
+        if (lua_type(L, -1) == LUA_TSTRING) {
+            rule.match.app_id = lua_tostring(L, -1);
+        } else if (!lua_isnoneornil(L, -1)) {
+            return luaL_error(L, "rule: app_id must be a string");
+        }
+        lua_pop(L, 1);
+        lua_getfield(L, -1, "title");
+        if (lua_type(L, -1) == LUA_TSTRING) {
+            rule.match.title = lua_tostring(L, -1);
+        } else if (!lua_isnoneornil(L, -1)) {
+            return luaL_error(L, "rule: title must be a string");
+        }
+        lua_pop(L, 1);
+        lua_getfield(L, -1, "xwayland");
+        if (lua_type(L, -1) == LUA_TBOOLEAN) {
+            rule.match.xwayland = lua_toboolean(L, -1) != 0;
+        } else if (!lua_isnoneornil(L, -1)) {
+            return luaL_error(L, "rule: xwayland must be a boolean");
+        }
+        lua_pop(L, 1);
+    }
+    lua_pop(L, 1); // match (or nil)
+    lua_getfield(L, 1, "float");
+    if (lua_type(L, -1) == LUA_TBOOLEAN) {
+        rule.floating = lua_toboolean(L, -1) != 0;
+    } else if (!lua_isnoneornil(L, -1)) {
+        return luaL_error(L, "rule: float must be a boolean");
+    }
+    lua_pop(L, 1);
+    lua_getfield(L, 1, "workspace");
+    if (lua_type(L, -1) == LUA_TNUMBER) {
+        int ws = static_cast<int>(lua_tointeger(L, -1));
+        if (ws < 1 || ws > 9) {
+            return luaL_error(L, "rule: workspace out of range 1..9");
+        }
+        rule.workspace = ws;
+    } else if (!lua_isnoneornil(L, -1)) {
+        return luaL_error(L, "rule: workspace must be a number");
+    }
+    lua_pop(L, 1);
+    if (!rule.floating.has_value() && rule.workspace == 0) {
+        return luaL_error(L, "rule: nothing to apply (need float and/or workspace)");
+    }
+    out->push_back(std::move(rule));
+    return 0;
+}
+
 } // namespace
 
 uint32_t parse_mods(const std::string &spec, bool &ok) {
@@ -265,6 +327,11 @@ bool load_config_file(const char *path, Config &out, std::string &error) {
     lua_pushcclosure(L, l_bind, 1);
     lua_setglobal(L, "bind");
 
+    std::vector<Rule> file_rules;
+    lua_pushlightuserdata(L, &file_rules);
+    lua_pushcclosure(L, l_rule, 1);
+    lua_setglobal(L, "rule");
+
     if (luaL_dofile(L, path) != LUA_OK) {
         error = lua_tostring(L, -1);
         lua_close(L);
@@ -333,9 +400,12 @@ bool load_config_file(const char *path, Config &out, std::string &error) {
     lua_pop(L, 1); // config (or the non-table global)
 
     // A file that binds nothing keeps the previous keymap (defaults on
-    // first load); a file with binds replaces it wholesale.
+    // first load); a file with binds replaces it wholesale. Same for rules.
     if (!file_keys.empty()) {
         next.keys = std::move(file_keys);
+    }
+    if (!file_rules.empty()) {
+        next.rules = std::move(file_rules);
     }
 
     lua_close(L);

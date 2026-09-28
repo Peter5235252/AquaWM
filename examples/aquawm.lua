@@ -28,3 +28,9 @@ for i = 1, 4 do
     bind("Super", tostring(i), "workspace", i)
     bind("Super+Shift", tostring(i), "move-to-workspace", i)
 end
+
+-- Window rules: evaluated top to bottom when a window maps, later
+-- matches win. Substring match; xwayland matches X11 clients.
+-- rule({ match = { app_id = "firefox" }, workspace = 2 })
+-- rule({ match = { title = "Picture-in-Picture" }, float = true })
+-- rule({ match = { xwayland = true }, float = true })
