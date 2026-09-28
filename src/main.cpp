@@ -254,6 +254,10 @@ struct Server {
     CursorMode cursor_mode = CursorMode::Passthrough;
     AnyView grabbed_tile{};
     bool has_grab = false;
+    // True when the active grab pulled its window out of tiling: dropping
+    // it (move release) docks it back. Resize grabs never dock, so an
+    // explicit resize keeps its size.
+    bool grab_from_tiled = false;
     uint32_t grab_button = 0;
     double grab_lx = 0;
     double grab_ly = 0;
@@ -957,7 +961,8 @@ void on_xview_request_move(struct wl_listener *listener, void * /*data*/) {
     XView *xview = wl_container_of(listener, xview, request_move);
     Server *server = xview->server;
     AnyView t{nullptr, xview};
-    if (!any_floating(t)) {
+    server->grab_from_tiled = !any_floating(t);
+    if (server->grab_from_tiled) {
         any_set_floating(t, true);
         arrange(server);
     }
@@ -979,7 +984,8 @@ void on_xview_request_resize(struct wl_listener *listener, void * /*data*/) {
     XView *xview = wl_container_of(listener, xview, request_resize);
     Server *server = xview->server;
     AnyView t{nullptr, xview};
-    if (!any_floating(t)) {
+    server->grab_from_tiled = !any_floating(t);
+    if (server->grab_from_tiled) {
         any_set_floating(t, true);
         arrange(server);
     }
@@ -1485,7 +1491,8 @@ void cursor_process_position(Server *server, uint32_t time_msec) {
 }
 
 void begin_grab(Server *server, const AnyView &t, CursorMode mode, uint32_t button) {
-    if (!any_floating(t)) {
+    server->grab_from_tiled = !any_floating(t);
+    if (server->grab_from_tiled) {
         // Dragging floats the window first so the tiling layout reflows
         // around the gap it leaves behind.
         any_set_floating(t, true);
@@ -1563,10 +1570,20 @@ void on_cursor_button(struct wl_listener *listener, void *data) {
                 begin_grab(server, hit, CursorMode::Resize, event->button);
             }
         }
-    } else if (event->button == server->grab_button) {
+    } else if (server->has_grab && (event->button == server->grab_button ||
+                   server->grab_button == 0)) {
+        // Drop: a move grab that started in tiling docks the window back
+        // so the layout reflows around it; anything else stays floating.
+        // (grab_button 0 comes from client-initiated X11 move/resize
+        // requests, which carry no button to match on release.)
+        if (server->cursor_mode == CursorMode::Move && server->grab_from_tiled) {
+            any_set_floating(server->grabbed_tile, false);
+            arrange(server);
+        }
         server->cursor_mode = CursorMode::Passthrough;
         server->grabbed_tile = AnyView{};
         server->has_grab = false;
+        server->grab_from_tiled = false;
         server->grab_button = 0;
     }
 }

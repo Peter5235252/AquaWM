@@ -245,6 +245,11 @@ WAYLAND_DISPLAY=wayland-1 kitty
 | click                 | focus window                  |
 | `Super+Left-drag`     | move window (floats it first) |
 | `Super+Right-drag`    | resize window (floats it first) |
+
+Dragging a tiled window out floats it and the rest re-tile around the
+gap; dropping it docks it back into the layout (resize grabs keep
+their size and stay floating). To park a window floating elsewhere,
+`Super+T` it first, then drag.
 ## Configuration (Phase 3a)
 
 Settings and keybindings live in Lua, not in C++:
