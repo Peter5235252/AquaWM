@@ -387,6 +387,13 @@ NixOS).
   edges. Remaining: fully programmable Lua API (window rules matching
   on class/title with float/workspace effects, event hooks, auto
   hot-reload on save via inotify).
+- Phase 5 (planned): client-compat hardening — honor xdg size hints so
+  Firefox and friends confine to their tiles, XWayland fixes (rule
+  float preserved on associate, no focus stealing by override-redirect
+  popups, workspace preserved across unmap/remap).
+- Phase 6 (planned): outputs and input — per-output mode
+  (resolution/refresh rate) from Lua, VRR (`0` off, `1` always,
+  `2` fullscreen-only), keyboard layouts with runtime switching.
 - Installer (done): one-liner `setup.sh` plus `install.sh` for Arch,
   Fedora and NixOS, with package manifests and a `--testmode` dry run.
 - Long-term (under consideration): once testing is solid and the core feature set is wrapped up, ditching wlroots and writing a new base from the ground up. No timeline on this, it's just on the table.
