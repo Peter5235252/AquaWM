@@ -1,0 +1,9 @@
+name: CI
+on: [push, pull_request]
+jobs:
+  nix-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - run: nix build --print-build-logs

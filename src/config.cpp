@@ -2,7 +2,8 @@
 //
 // Config language (see examples/init.lua):
 //
-//   config = { gaps = 8, mfact = 0.6, nmaster = 1, workspaces = 4 }
+//   config = { gaps = 8, mfact = 0.6, nmaster = 1, workspaces = 4,
+//                layout = "master", terminal = "kitty" }
 //
 //   bind("Super", "Return", "spawn-terminal")
 //   bind("Super", "j", "focus-next")
@@ -284,6 +285,8 @@ bool load_config_file(const char *path, Config &out, std::string &error) {
         std::string layout = get_string_field(L, "layout", next.layout);
         float split_ratio =
             get_float_field(L, "split_ratio", next.split_ratio);
+        std::string terminal =
+            get_string_field(L, "terminal", next.terminal);
         if (gaps < 0) {
             gaps = 0;
         }
@@ -320,6 +323,9 @@ bool load_config_file(const char *path, Config &out, std::string &error) {
             split_ratio = 0.9f;
         }
         next.split_ratio = split_ratio;
+        if (!terminal.empty()) {
+            next.terminal = terminal;
+        }
         if (!wallpaper.empty()) {
             next.wallpaper = wallpaper;
         }

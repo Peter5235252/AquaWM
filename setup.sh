@@ -2,7 +2,7 @@
 # aquawm one-line setup (ML4W style): detect distro, install git, clone
 # aquawm, hand off to install.sh. Run from anywhere, even a bare machine:
 #
-#   bash <(curl -s https://raw.githubusercontent.com/Peter5235252/tilewm/main/setup.sh)
+#   bash <(curl -s https://raw.githubusercontent.com/Peter5235252/AquaWM/main/setup.sh)
 #
 # Any arguments are forwarded to install.sh (try --yes for automation).
 # Honors AQUAWM_DEST to override the checkout location (default ~/aquawm).

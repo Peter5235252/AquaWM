@@ -460,17 +460,34 @@ void any_raise_to_top(Server *server, const AnyView &t) {
     server->tiles.insert(server->tiles.begin(), t);
 }
 
-void spawn_terminal() {
+void spawn_terminal(const std::string &configured) {
     if (fork() == 0) {
         setsid();
-        execlp("kitty", "kitty", nullptr);
-        execlp("foot", "foot", nullptr);
-        execlp("weston-terminal", "weston-terminal", nullptr);
+        // Configured terminal first, then well-known fallbacks (deduped).
+        // execlp resolves via PATH, so this works for system packages,
+        // nix profiles and /usr/local installs alike.
+        const char *candidates[] = {
+            configured.c_str(), "kitty", "foot", "weston-terminal", nullptr};
+        const char *tried[4] = {nullptr, nullptr, nullptr, nullptr};
+        for (int i = 0; candidates[i] != nullptr; ++i) {
+            bool seen = false;
+            for (int j = 0; j < i; ++j) {
+                if (tried[j] != nullptr &&
+                    std::strcmp(tried[j], candidates[i]) == 0) {
+                    seen = true;
+                    break;
+                }
+            }
+            if (!seen) {
+                tried[i] = candidates[i];
+                execlp(candidates[i], candidates[i], nullptr);
+            }
+        }
         // Reached only when no terminal exists on PATH: loud, with the
         // errno, instead of vanishing silently into _exit.
         std::fprintf(stderr,
-            "aquawm: spawn-terminal: no kitty/foot/weston-terminal on PATH: %s\n",
-            std::strerror(errno));
+            "aquawm: spawn-terminal: no terminal on PATH (tried %s): %s\n",
+            configured.c_str(), std::strerror(errno));
         _exit(127);
     }
     wlr_log(WLR_INFO, "spawn-terminal requested (Super+Return)");
@@ -1242,7 +1259,7 @@ bool reload_config(Server *server) {
 void run_action(Server *server, const aquawm::Keybind &bind) {
     const std::string &a = bind.action;
     if (a == "spawn-terminal") {
-        spawn_terminal();
+        spawn_terminal(server->config.terminal);
     } else if (a == "close") {
         AnyView focused{};
         if (focused_tile(server, focused)) {

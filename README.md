@@ -1,8 +1,9 @@
 # AquaWM — a tiny tiling Wayland compositor in C++ (wlroots 0.20)
 
-Built and tested on Fedora 44 under WSL2 / WSLg plus NixOS on real hardware, but it should run on any
-Linux with wlroots 0.20: nested under another Wayland/X11 session for
-development, or on DRM/KMS on real hardware.
+Developed and tested on NixOS on real hardware — bare metal on both
+Intel (ThinkPad T480) and NVIDIA (GTX 1660 Super) graphics. Nested
+sessions under another Wayland/X11 compositor (including WSLg) work
+for development, and Arch/Fedora build from official repositories.
 
 ## Status
 
@@ -13,14 +14,13 @@ focus, float, fullscreen), nested backends under WSLg, installer for
 Arch/Fedora/NixOS.
 
 In progress: bar pointer/keyboard input is not forwarded yet, so bars
-display and reserve space but are not clickable. Next: NixOS module /
-home-manager story.
+display and reserve space but are not clickable.
 
-Supported distros: **Arch Linux, Fedora and NixOS.** The installer and
-the dependency lists cover exactly these three; anything else is
-unverified. On Arch and Fedora every dependency comes from the official
-repositories (no AUR, no COPR); on NixOS the flake provides the whole
-toolchain, so no system packages are needed at all.
+Supported distros: **NixOS** (primary target, tested on real hardware),
+**Arch Linux and Fedora** (supported via official repositories — no AUR,
+no COPR — but not yet booted, so treat them as untested for now).
+On NixOS the flake provides the whole toolchain, so no system packages
+are needed at all.
 
 ## Install (recommended)
 
@@ -28,14 +28,14 @@ From a bare machine, one line (Arch, Fedora or NixOS) — detects your
 distro, installs git, clones, and hands off to the installer:
 
 ```
-bash <(curl -s https://raw.githubusercontent.com/Peter5235252/tilewm/main/setup.sh)
+bash <(curl -s https://raw.githubusercontent.com/Peter5235252/AquaWM/main/setup.sh)
 ```
 
 Or the classic way:
 
 ```
 git clone https://github.com/Peter5235252/AquaWM.git
-cd aquawm
+cd AquaWM
 ./install.sh
 ```
 
@@ -107,9 +107,25 @@ sudo pacman -S base-devel cmake ninja pkgconf git \
 Log out to a TTY (e.g. `Ctrl+Alt+F3`), log in, and run `./build/aquawm`
 from there so backend autocreate picks DRM/KMS (with real GLES2/Vulkan
 rendering instead of the nested pixman fallback). A normal TTY login
-gives you the logind session compositors need for input and DRM access;
-on hybrid-GPU laptops stick to the Intel iGPU. Nested testing under an
-existing Wayland/X11 session works exactly like under WSLg.
+gives you the logind session compositors need for input and DRM access.
+Nested testing under an existing Wayland/X11 session works exactly like
+under WSLg.
+
+### Graphics: Intel and NVIDIA
+
+- **Intel iGPU** (tested on the ThinkPad T480): on hybrid-GPU laptops,
+  stick to the Intel iGPU as the primary display — if you can see the
+  login prompt, modesetting already works.
+- **NVIDIA TU116 / GTX 1660 SUPER** (tested bare metal on NixOS from
+  Plasma Login Manager): proprietary drivers, open kernel modules
+  (`hardware.nvidia.open = true`), modesetting on (required for
+  Wayland), persistence daemon on. No special environment variables;
+  the session wrapper only points `XKB_CONFIG_ROOT` at the system xkb
+  database when the compiled-in path is missing (a NixOS quirk).
+  GBM modifiers differ from Intel/Mesa, so allocator-sensitive paths
+  (wallpaper upload) probe several modifiers plus a CPU fallback —
+  if the background stays black on a new GPU, that probe is where
+  to look first.
 
 ### Launch from a TTY on NixOS
 
@@ -298,8 +314,17 @@ config = {
 
 ## Terminal (kitty)
 
-AquaWM spawns `kitty` on `Super+Return` (falling back to `foot`, then
-`weston-terminal`). Example config:
+AquaWM spawns `terminal` on `Super+Return` (`kitty` by default, with
+`foot` then `weston-terminal` as fallbacks):
+
+```
+config = {
+    ...
+    terminal = "kitty",
+}
+```
+
+Example kitty config:
 
 ```
 mkdir -p ~/.config/kitty
@@ -339,16 +364,19 @@ NixOS).
   override-redirect windows float).
 - Phase 4 (planned): fully programmable Lua API for AquaWM — window
   rules (match on class/title, float/workspace effects), layout
-  selection per config, event hooks — plus more tiling layouts
+  selection per config, event hooks, auto hot-reload on save
+  (inotify) — plus more tiling layouts
   (master, dwindle, grid, monocle) to choose from.
-- Installer (done): one-liner `setup.sh` plus `install.sh` for Arch
-  and Fedora, with package manifests and a `--testmode` dry run.
+- Installer (done): one-liner `setup.sh` plus `install.sh` for Arch,
+  Fedora and NixOS, with package manifests and a `--testmode` dry run.
 - Long-term (under consideration): once testing is solid and the core feature set is wrapped up, ditching wlroots and writing a new base from the ground up. No timeline on this, it's just on the table.
 
 ## Distro support, now and later
 
 AquaWM is developed and tested on **NixOS first** — it installs and builds through the flake, runs on real hardware, and is where active development happens. Expect occasional rough edges as it matures fast.
 
-**Arch Linux and Fedora** are fully supported, with every dependency available from the official repositories — no AUR, no COPR needed.
+**Arch Linux and Fedora** are supported, with every dependency available
+from the official repositories — no AUR, no COPR needed — but neither
+has been booted yet, so treat them as untested for now.
 
 **Ubuntu and Debian are not supported and won't be.** Their release cycles ship wlroots and Wayland libraries too old for a current compositor, and this project won't take on backporting around that. If that ever changes, this section will say so.
