@@ -2514,10 +2514,38 @@ bool apply_output_mode(Server *server, Output *output) {
     if (out->width == tw && out->height == th && out->refresh == tr) {
         return false;
     }
+    // Prefer a driver-listed mode: the NVIDIA proprietary driver rejects
+    // synthetic custom modes even when the timings exist (1080p144 was
+    // refused as custom), while the identical mode from its own list
+    // commits fine. Tolerance covers fractional rates (59940 vs 60000).
+    struct wlr_output_mode *listed = nullptr;
+    {
+        struct wlr_output_mode *m = nullptr;
+        wl_list_for_each(m, &out->modes, link) {
+            if (m->width != tw || m->height != th) {
+                continue;
+            }
+            int d = m->refresh - tr;
+            if (d < 0) {
+                d = -d;
+            }
+            if (d > 500) {
+                continue;
+            }
+            listed = m;
+            if (m->refresh == tr) {
+                break;
+            }
+        }
+    }
     struct wlr_output_state state;
     wlr_output_state_init(&state);
     wlr_output_state_set_enabled(&state, true);
-    wlr_output_state_set_custom_mode(&state, tw, th, tr);
+    if (listed != nullptr) {
+        wlr_output_state_set_mode(&state, listed);
+    } else {
+        wlr_output_state_set_custom_mode(&state, tw, th, tr);
+    }
     bool ok = wlr_output_test_state(out, &state);
     if (ok) {
         ok = wlr_output_commit_state(out, &state);
@@ -2528,7 +2556,8 @@ bool apply_output_mode(Server *server, Output *output) {
             name, tw, th, tr);
         return false;
     }
-    wlr_log(WLR_INFO, "output %s: mode %dx%d@%d mHz", name, tw, th, tr);
+    wlr_log(WLR_INFO, "output %s: mode %dx%d@%d mHz (%s)", name, tw, th, tr,
+        listed != nullptr ? "listed" : "custom");
     return true;
 }
 
