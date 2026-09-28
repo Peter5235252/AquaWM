@@ -396,6 +396,57 @@ bool load_config_file(const char *path, Config &out, std::string &error) {
         if (!wallpaper.empty()) {
             next.wallpaper = wallpaper;
         }
+        int vrr = get_int_field(L, "vrr", next.vrr);
+        if (vrr < 0) {
+            vrr = 0;
+        }
+        if (vrr > 2) {
+            vrr = 2;
+        }
+        next.vrr = vrr;
+        // keyboard = { layout = "us,hu", variant = "", options = ... }:
+        // absent fields keep their previous values.
+        lua_getfield(L, -1, "keyboard");
+        if (lua_istable(L, -1)) {
+            next.keyboard.layout =
+                get_string_field(L, "layout", next.keyboard.layout);
+            next.keyboard.variant =
+                get_string_field(L, "variant", next.keyboard.variant);
+            next.keyboard.options =
+                get_string_field(L, "options", next.keyboard.options);
+        }
+        lua_pop(L, 1); // keyboard (or nil)
+        // outputs = { { name = "DP-1", width = 2560, height = 1440,
+        //               refresh = 144 }, ... }: a present table replaces
+        // the list wholesale (so it can also be cleared).
+        lua_getfield(L, -1, "outputs");
+        if (lua_istable(L, -1)) {
+            std::vector<OutputMode> modes;
+            const std::size_t n = lua_rawlen(L, -1);
+            for (std::size_t i = 1; i <= n; ++i) {
+                lua_rawgeti(L, -1, static_cast<lua_Integer>(i));
+                if (lua_istable(L, -1)) {
+                    OutputMode m;
+                    m.name = get_string_field(L, "name", "");
+                    m.width = get_int_field(L, "width", 0);
+                    m.height = get_int_field(L, "height", 0);
+                    m.refresh = get_float_field(L, "refresh", 0);
+                    if (m.width < 0) {
+                        m.width = 0;
+                    }
+                    if (m.height < 0) {
+                        m.height = 0;
+                    }
+                    if (m.refresh < 0) {
+                        m.refresh = 0;
+                    }
+                    modes.push_back(std::move(m));
+                }
+                lua_pop(L, 1); // entry (or non-table)
+            }
+            next.outputs = std::move(modes);
+        }
+        lua_pop(L, 1); // outputs (or nil)
     }
     lua_pop(L, 1); // config (or the non-table global)
 

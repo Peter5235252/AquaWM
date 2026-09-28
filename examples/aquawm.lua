@@ -14,6 +14,14 @@ config = {
     split_ratio = 0.50, -- dwindle split fraction (0.10 .. 0.90)
     terminal = "kitty", -- spawned on Super+Return
     -- wallpaper = os.getenv("HOME") .. "/.config/aquawm/wallpaper.jpg",
+    -- Outputs, VRR and keyboard (all live-applied on save):
+    -- outputs: fixed mode per connector; omitted fields keep preferred.
+    -- outputs = {
+    --     { name = "DP-1", width = 2560, height = 1440, refresh = 144 },
+    -- },
+    vrr = 0, -- adaptive sync: 0 off, 1 windowed+fullscreen, 2 fullscreen-only
+    -- keyboard: xkb layouts; "us,hu" + grp toggle = runtime language switch.
+    keyboard = { layout = "us", variant = "", options = "" },
 }
 
 bind("Super", "Return", "spawn-terminal")

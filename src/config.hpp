@@ -25,6 +25,24 @@ struct Keybind {
     int arg = 0; // 1-based workspace number for workspace actions
 };
 
+// Fixed output mode from Lua: matched by connector name ("DP-1").
+// Zero width/height keeps the preferred mode; zero refresh keeps the
+// preferred rate. Refresh is in Hz (converted to mHz for wlroots).
+struct OutputMode {
+    std::string name; // empty matches any output (first match wins)
+    int width = 0;
+    int height = 0;
+    float refresh = 0;
+};
+
+// xkb rule names for every keyboard: layout = "us,hu" with
+// options = "grp:alt_shift_toggle" gives runtime language switching.
+struct KeyboardConfig {
+    std::string layout;
+    std::string variant;
+    std::string options;
+};
+
 struct Config {
     int gaps = 0;        // pixels around each window (and screen edge)
     float mfact = 0.55f; // master column width fraction
@@ -35,6 +53,9 @@ struct Config {
     std::string layout = "master"; // tiling layout, see tiling.hpp
     float split_ratio = 0.5f; // dwindle split fraction
     std::string terminal = "kitty"; // spawned on Super+Return
+    int vrr = 0; // adaptive sync: 0 off, 1 always, 2 fullscreen-only
+    KeyboardConfig keyboard; // xkb layout/variant/options, empty = default
+    std::vector<OutputMode> outputs; // fixed modes by connector name
     std::vector<Keybind> keys;
     std::vector<Rule> rules; // evaluated at map time, in file order
 };

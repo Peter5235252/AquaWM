@@ -153,6 +153,45 @@ int main() {
         std::remove(path);
     }
 
+    // VRR, keyboard and output modes parse; vrr clamps to 0..2.
+    {
+        const char *path = "/tmp/aquawm-test-init-p6.lua";
+        {
+            std::ofstream f(path);
+            f << "config = { vrr = 9,\n"
+                  "  keyboard = { layout = \"us,hu\", options = \"grp:alt_shift_toggle\" },\n"
+                  "  outputs = { { name = \"DP-1\", width = 2560, height = 1440, refresh = 144 } } }\n";
+        }
+        Config c = aquawm::default_config();
+        std::string err;
+        CHECK(aquawm::load_config_file(path, c, err));
+        CHECK(c.vrr == 2);
+        CHECK(c.keyboard.layout == "us,hu");
+        CHECK(c.keyboard.options == "grp:alt_shift_toggle");
+        CHECK(c.keyboard.variant.empty());
+        CHECK(c.outputs.size() == 1);
+        CHECK(c.outputs[0].name == "DP-1");
+        CHECK(c.outputs[0].width == 2560 && c.outputs[0].height == 1440);
+        CHECK(c.outputs[0].refresh > 143.9f && c.outputs[0].refresh < 144.1f);
+        std::remove(path);
+    }
+
+    // A missing keyboard/outputs section keeps previous values.
+    {
+        const char *path = "/tmp/aquawm-test-init-p6b.lua";
+        {
+            std::ofstream f(path);
+            f << "config = { gaps = 5 }\n";
+        }
+        Config c = aquawm::default_config();
+        c.vrr = 1;
+        c.keyboard.layout = "hu";
+        std::string err;
+        CHECK(aquawm::load_config_file(path, c, err));
+        CHECK(c.vrr == 1 && c.keyboard.layout == "hu" && c.outputs.empty());
+        std::remove(path);
+    }
+
     // Broken Lua and bad binds are errors.
     {
         const char *path = "/tmp/aquawm-test-init3.lua";

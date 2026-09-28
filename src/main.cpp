@@ -131,6 +131,8 @@ struct Output {
     int warn_w = -1;
     struct wl_listener frame{};
     struct wl_listener destroy{};
+    // Last adaptive-sync state we committed (Phase 6 VRR tracking).
+    bool vrr_on = false;
 };
 
 struct View {
@@ -298,6 +300,9 @@ struct Server {
 
     std::vector<Output *> outputs;
     std::vector<LayerSurface *> layers;
+    // All keyboards, so config reloads can re-apply the xkb keymap
+    // (Phase 6 layouts) to already-plugged devices.
+    std::vector<Keyboard *> keyboards;
     // Tiling stack across both protocols (Phase 3c). Front of the vector
     // is topmost (most recently focused).
     std::vector<AnyView> tiles;
@@ -321,6 +326,9 @@ void focus_xview(Server *server, XView *xview);
 void drop_wallpaper(Server *server);
 void arrange(Server *server);
 void arrange_layers(Server *server);
+void update_vrr(Server *server);
+void reapply_keymaps(Server *server);
+void apply_all_outputs(Server *server);
 
 // Apply matching window rules (file order, later wins): floating and/or
 // target workspace. Runs before arrange+focus so tiled windows land in
@@ -690,6 +698,7 @@ void arrange(Server *server) {
         any_set_pos(t, boxes[i].x + gaps, boxes[i].y + gaps);
         any_commit_size(t, w, h);
     }
+    update_vrr(server);
 }
 
 void focus_any(Server *server, const AnyView &t) {
@@ -1298,6 +1307,11 @@ bool reload_config(Server *server) {
     server->config = std::move(next);
     // A successful reload means a valid file: no longer fallback.
     server->config_fallback = false;
+    // Live-apply the Phase 6 knobs: keyboard layouts, fixed output modes
+    // (rebuilds layout when a commit lands) and VRR intent.
+    reapply_keymaps(server);
+    apply_all_outputs(server);
+    update_vrr(server);
     if (server->active_workspace >= server->config.workspaces) {
         server->active_workspace = server->config.workspaces - 1;
     }
@@ -1527,20 +1541,26 @@ void on_keyboard_modifiers(struct wl_listener *listener, void * /*data*/) {
 
 void on_keyboard_destroy(struct wl_listener *listener, void * /*data*/) {
     Keyboard *kb = wl_container_of(listener, kb, destroy);
+    Server *server = kb->server;
     wl_list_remove(&kb->key.link);
     wl_list_remove(&kb->modifiers.link);
     wl_list_remove(&kb->destroy.link);
+    auto &kbs = server->keyboards;
+    kbs.erase(std::remove(kbs.begin(), kbs.end(), kb), kbs.end());
     delete kb;
 }
 
-void setup_keyboard(Server *server, struct wlr_input_device *device) {
-    struct wlr_keyboard *kbd = wlr_keyboard_from_input_device(device);
-    wlr_log(WLR_INFO, "new keyboard: %s", device->name != nullptr ? device->name : "(unnamed)");
-
+// Compile the configured xkb layout/variant/options onto a keyboard.
+// Empty fields mean "system default", same as before Phase 6.
+void apply_keymap(Server *server, struct wlr_keyboard *kbd) {
+    const aquawm::KeyboardConfig &kc = server->config.keyboard;
     // A keyboard without a working keymap still forwards raw keycodes;
     // only the compositor-side keysym matching degrades. Every failure
     // here is loud because silent dead keys are worse than no keyboard.
     struct xkb_rule_names rules{};
+    rules.layout = kc.layout.empty() ? nullptr : kc.layout.c_str();
+    rules.variant = kc.variant.empty() ? nullptr : kc.variant.c_str();
+    rules.options = kc.options.empty() ? nullptr : kc.options.c_str();
     struct xkb_context *context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
     struct xkb_keymap *keymap = nullptr;
     if (context == nullptr) {
@@ -1550,7 +1570,8 @@ void setup_keyboard(Server *server, struct wlr_input_device *device) {
             XKB_KEYMAP_COMPILE_NO_FLAGS);
         if (keymap == nullptr) {
             wlr_log(WLR_ERROR,
-                "keyboard: cannot compile keymap (missing xkeyboard-config data? check XKB_CONFIG_ROOT); keys will not translate");
+                "keyboard: cannot compile keymap (layout='%s' options='%s'; missing xkeyboard-config data? check XKB_CONFIG_ROOT); keys will not translate",
+                kc.layout.c_str(), kc.options.c_str());
         } else {
             wlr_keyboard_set_keymap(kbd, keymap);
             if (kbd->xkb_state == nullptr) {
@@ -1561,6 +1582,22 @@ void setup_keyboard(Server *server, struct wlr_input_device *device) {
         }
         xkb_context_unref(context);
     }
+}
+
+void reapply_keymaps(Server *server) {
+    for (Keyboard *kb : server->keyboards) {
+        apply_keymap(server, kb->kbd);
+    }
+    wlr_log(WLR_INFO, "keyboard: re-applied layout='%s' options='%s' to %zu device(s)",
+        server->config.keyboard.layout.c_str(),
+        server->config.keyboard.options.c_str(), server->keyboards.size());
+}
+
+void setup_keyboard(Server *server, struct wlr_input_device *device) {
+    struct wlr_keyboard *kbd = wlr_keyboard_from_input_device(device);
+    wlr_log(WLR_INFO, "new keyboard: %s", device->name != nullptr ? device->name : "(unnamed)");
+
+    apply_keymap(server, kbd);
     wlr_keyboard_set_repeat_info(kbd, 25, 600);
 
     Keyboard *kb = new Keyboard();
@@ -1573,6 +1610,7 @@ void setup_keyboard(Server *server, struct wlr_input_device *device) {
     wl_signal_add(&kbd->events.modifiers, &kb->modifiers);
     kb->destroy.notify = on_keyboard_destroy;
     wl_signal_add(&device->events.destroy, &kb->destroy);
+    server->keyboards.push_back(kb);
 
     wlr_seat_set_keyboard(server->seat, kbd);
 }
@@ -2330,6 +2368,154 @@ void on_output_destroy(struct wl_listener *listener, void * /*data*/) {
     arrange_layers(server);
 }
 
+// Phase 6: fixed output modes + VRR from Lua. Exact connector-name match
+// wins; an entry with an empty name matches any output.
+const aquawm::OutputMode *match_output_mode(Server *server, const char *name) {
+    const char *n = name != nullptr ? name : "";
+    const aquawm::OutputMode *wildcard = nullptr;
+    for (const aquawm::OutputMode &m : server->config.outputs) {
+        if (m.name.empty()) {
+            if (wildcard == nullptr) {
+                wildcard = &m;
+            }
+        } else if (m.name == n) {
+            return &m;
+        }
+    }
+    return wildcard;
+}
+
+bool preferred_mode_size(struct wlr_output *out, int &w, int &h, int &refresh) {
+    struct wlr_output_mode *pref = nullptr;
+    struct wlr_output_mode *mode = nullptr;
+    wl_list_for_each(mode, &out->modes, link) {
+        if (mode->preferred) {
+            pref = mode;
+            break;
+        }
+    }
+    if (pref == nullptr) {
+        pref = wlr_output_preferred_mode(out);
+    }
+    if (pref == nullptr) {
+        return false;
+    }
+    w = pref->width;
+    h = pref->height;
+    refresh = pref->refresh;
+    return true;
+}
+
+// Apply the configured mode to one output. No matching entry (or an
+// already-correct mode) means no commit. Returns true when a commit landed,
+// so the caller can rebuild layout once afterwards.
+bool apply_output_mode(Server *server, Output *output) {
+    struct wlr_output *out = output->wlr_output;
+    const char *name = out->name != nullptr ? out->name : "";
+    const aquawm::OutputMode *cfg = match_output_mode(server, name);
+    if (cfg == nullptr) {
+        return false;
+    }
+    int tw = cfg->width;
+    int th = cfg->height;
+    int tr = cfg->refresh > 0 ? static_cast<int>(cfg->refresh * 1000.0f) : 0;
+    if (tw <= 0 || th <= 0 || tr <= 0) {
+        int pw = 0, ph = 0, pr = 0;
+        if (!preferred_mode_size(out, pw, ph, pr)) {
+            wlr_log(WLR_ERROR, "output %s: no preferred mode, keeping current",
+                name);
+            return false;
+        }
+        if (tw <= 0) {
+            tw = pw;
+        }
+        if (th <= 0) {
+            th = ph;
+        }
+        if (tr <= 0) {
+            tr = pr;
+        }
+    }
+    if (out->width == tw && out->height == th && out->refresh == tr) {
+        return false;
+    }
+    struct wlr_output_state state;
+    wlr_output_state_init(&state);
+    wlr_output_state_set_enabled(&state, true);
+    wlr_output_state_set_custom_mode(&state, tw, th, tr);
+    bool ok = wlr_output_test_state(out, &state);
+    if (ok) {
+        ok = wlr_output_commit_state(out, &state);
+    }
+    wlr_output_state_finish(&state);
+    if (!ok) {
+        wlr_log(WLR_ERROR, "output %s: mode %dx%d@%d mHz rejected, keeping current",
+            name, tw, th, tr);
+        return false;
+    }
+    wlr_log(WLR_INFO, "output %s: mode %dx%d@%d mHz", name, tw, th, tr);
+    return true;
+}
+
+void apply_all_outputs(Server *server) {
+    bool changed = false;
+    for (Output *o : server->outputs) {
+        changed |= apply_output_mode(server, o);
+    }
+    if (changed) {
+        arrange_layers(server);
+        arrange(server);
+    }
+}
+
+// VRR from Lua: 0 off, 1 on for windowed and fullscreen apps, 2 on for
+// fullscreen apps only (enabled while a fullscreen view is visible).
+// Commits only on change, so arrange() can call this every layout.
+void update_vrr(Server *server) {
+    const int mode = server->config.vrr;
+    bool fs = false;
+    if (mode == 2) {
+        for (const AnyView &t : server->tiles) {
+            if (!any_mapped(t) ||
+                any_workspace(t) != server->active_workspace) {
+                continue;
+            }
+            if (any_fullscreen(t)) {
+                fs = true;
+                break;
+            }
+            if (t.v != nullptr && t.v->toplevel->current.fullscreen) {
+                fs = true;
+                break;
+            }
+        }
+    }
+    for (Output *o : server->outputs) {
+        const bool want = mode == 1 || (mode == 2 && fs);
+        if (want == o->vrr_on) {
+            continue;
+        }
+        struct wlr_output *out = o->wlr_output;
+        const char *name = out->name != nullptr ? out->name : "?";
+        // Latch the intent even when the commit cannot land, so a
+        // failing output retries only when the intent flips (no per-frame
+        // commit storm from arrange()).
+        o->vrr_on = want;
+        if (want && !out->adaptive_sync_supported) {
+            wlr_log(WLR_INFO, "output %s: adaptive sync not supported, leaving off",
+                name);
+            continue;
+        }
+        struct wlr_output_state state;
+        wlr_output_state_init(&state);
+        wlr_output_state_set_adaptive_sync_enabled(&state, want);
+        const bool ok = wlr_output_commit_state(out, &state);
+        wlr_output_state_finish(&state);
+        wlr_log(ok ? WLR_INFO : WLR_ERROR, "output %s: adaptive sync %s",
+            name, want ? "on" : "off");
+    }
+}
+
 void on_new_output(struct wl_listener *listener, void *data) {
     Server *server = wl_container_of(listener, server, new_output);
     struct wlr_output *wlr_output = static_cast<struct wlr_output *>(data);
@@ -2384,6 +2570,13 @@ void on_new_output(struct wl_listener *listener, void *data) {
             ls->layer->output = wlr_output;
         }
     }
+    // Fixed mode from Lua (test-then-commit; keeps preferred on reject),
+    // then VRR intent for the new output.
+    if (apply_output_mode(server, output)) {
+        wlr_output_layout_get_box(server->output_layout, wlr_output,
+            &output->usable_area);
+    }
+    update_vrr(server);
     arrange_layers(server);
 }
 

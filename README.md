@@ -269,6 +269,23 @@ or a restart reload manually. A custom path works too:
 `aquawm /path/to/aquawm.lua` (its directory is watched instead).
 Missing or broken files fall back to built-in defaults with a log line.
 
+Outputs, VRR and keyboard (Phase 6, all live-applied on save):
+
+```
+config.outputs = {
+    { name = "DP-1", width = 2560, height = 1440, refresh = 144 },
+}
+config.vrr = 1
+config.keyboard = { layout = "us,hu", options = "grp:alt_shift_toggle" }
+```
+
+`outputs` pins a mode per connector (resolution + refresh in Hz;
+omitted fields keep the preferred mode; rejected modes log an error and
+keep the current one). `vrr` is adaptive sync: `0` off, `1` on for
+windowed and fullscreen apps, `2` only while a fullscreen app is
+visible. `keyboard` sets xkb layout/variant/options on every keyboard
+(`"us,hu"` plus the `grp` toggle switches language live on Alt+Shift).
+
 ## Wallpaper
 
 `config = { wallpaper = "/path/to/image.jpg" }` (PNG or JPEG) sets the
