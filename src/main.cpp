@@ -446,6 +446,22 @@ void any_commit_size(const AnyView &t, int w, int h) {
         h = 1;
     }
     if (t.v != nullptr) {
+        // Honor client size hints: Firefox refuses configure sizes below
+        // its minimum and keeps rendering at the old size outside the
+        // tile, so clamp to what the client will actually use.
+        const struct wlr_xdg_toplevel_state *cur = &t.v->toplevel->current;
+        if (cur->min_width > 0 && w < cur->min_width) {
+            w = cur->min_width;
+        }
+        if (cur->min_height > 0 && h < cur->min_height) {
+            h = cur->min_height;
+        }
+        if (cur->max_width > 0 && w > cur->max_width) {
+            w = cur->max_width;
+        }
+        if (cur->max_height > 0 && h > cur->max_height) {
+            h = cur->max_height;
+        }
         if (t.v->applied_w == w && t.v->applied_h == h) {
             return;
         }
