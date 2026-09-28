@@ -61,7 +61,9 @@ extern "C" {
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_cursor.h>
+#include <wlr/types/wlr_data_control_v1.h>
 #include <wlr/types/wlr_data_device.h>
+#include <wlr/types/wlr_primary_selection.h>
 #include <wlr/types/wlr_input_device.h>
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/types/wlr_layer_shell_v1.h>
@@ -285,10 +287,14 @@ struct Server {
 
     struct wl_listener new_output{};
     struct wl_listener new_input{};
-    struct wl_listener new_toplevel{};
-    struct wl_listener new_layer_surface{};
+    struct wl_listener new_toplevel{};    struct wl_listener new_layer_surface{};
     struct wl_listener new_xwayland_surface{};
     struct wl_listener request_cursor{};
+    // Clipboard: wlroots only emits request_set_selection and expects the
+    // compositor to accept it. Without these, no client (including
+    // wl-copy/wl-paste) can ever set the selection.
+    struct wl_listener seat_request_set_selection{};
+    struct wl_listener seat_request_set_primary_selection{};
     struct wl_listener backend_destroy{};
     // Set when the backend died on its own (host disconnect): its listeners
     // were already detached in on_backend_destroy, so main() teardown must
@@ -1876,6 +1882,23 @@ void on_request_cursor(struct wl_listener *listener, void *data) {
     }
 }
 
+// Clipboard accept path (regular and data-control clients alike): wlroots
+// validates the request and emits this; the compositor applies it.
+void on_seat_request_set_selection(struct wl_listener *listener, void *data) {
+    Server *server = wl_container_of(listener, server, seat_request_set_selection);
+    auto *event = static_cast<struct wlr_seat_request_set_selection_event *>(data);
+    wlr_seat_set_selection(server->seat, event->source, event->serial);
+}
+
+void on_seat_request_set_primary_selection(struct wl_listener *listener,
+    void *data) {
+    Server *server =
+        wl_container_of(listener, server, seat_request_set_primary_selection);
+    auto *event =
+        static_cast<struct wlr_seat_request_set_primary_selection_event *>(data);
+    wlr_seat_set_primary_selection(server->seat, event->source, event->serial);
+}
+
 void on_new_input(struct wl_listener *listener, void *data) {
     Server *server = wl_container_of(listener, server, new_input);
     struct wlr_input_device *device = static_cast<struct wlr_input_device *>(data);
@@ -2755,6 +2778,10 @@ int main(int argc, char **argv) {
     }
     wlr_subcompositor_create(server.display);
     wlr_data_device_manager_create(server.display);
+    // Clipboard CLI tools (wl-copy/wl-paste) and managers speak
+    // wlr-data-control, not plain wl_data_device: without this they
+    // connect fine but can never offer a selection ("Nothing is copied").
+    wlr_data_control_manager_v1_create(server.display);
 
     // XWayland (Phase 3c, lazy): no X server spawns until an X11 client
     // actually connects. The wlr_compositor is required for XWM startup.
@@ -2839,6 +2866,13 @@ int main(int argc, char **argv) {
     server.seat = wlr_seat_create(server.display, "seat0");
     server.request_cursor.notify = on_request_cursor;
     wl_signal_add(&server.seat->events.request_set_cursor, &server.request_cursor);
+    server.seat_request_set_selection.notify = on_seat_request_set_selection;
+    wl_signal_add(&server.seat->events.request_set_selection,
+        &server.seat_request_set_selection);
+    server.seat_request_set_primary_selection.notify =
+        on_seat_request_set_primary_selection;
+    wl_signal_add(&server.seat->events.request_set_primary_selection,
+        &server.seat_request_set_primary_selection);
     // Advertise input capabilities up front. Without this the seat reports
     // zero caps: clients can neither create keyboard/pointer objects nor
     // receive input (kitty won't even map its window, foot looks frozen).
@@ -2889,6 +2923,8 @@ int main(int argc, char **argv) {
     wl_list_remove(&server.new_layer_surface.link);
     wl_list_remove(&server.new_xwayland_surface.link);
     wl_list_remove(&server.request_cursor.link);
+    wl_list_remove(&server.seat_request_set_selection.link);
+    wl_list_remove(&server.seat_request_set_primary_selection.link);
     wl_list_remove(&server.cursor_events.motion.link);
     wl_list_remove(&server.cursor_events.motion_absolute.link);
     wl_list_remove(&server.cursor_events.button.link);
