@@ -1,5 +1,6 @@
 -- aquawm example config: copy to ~/.config/aquawm/aquawm.lua and tweak.
--- Reload a running compositor with Super+Shift+R (or SIGHUP).
+-- Saving this file reloads it automatically; Super+Shift+R (or SIGHUP)
+-- reloads manually.
 -- Key names follow xkb keysyms ("Return", "space", "q", "1" ...).
 -- Modifiers: Alt, Ctrl, Shift, Super (Logo/Win/Mod4 also work).
 

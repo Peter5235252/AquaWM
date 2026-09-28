@@ -263,8 +263,10 @@ $EDITOR ~/.config/aquawm/aquawm.lua
 The file sets `config = { gaps, mfact, nmaster, workspaces }` and
 registers keys with `bind("Super", "m", "quit")` (modifiers Alt, Ctrl,
 Shift, Super; key names are xkb keysyms; workspace actions take a 1-based
-number). Apply changes with `Super+Shift+R`, with `kill -HUP <aquawm-pid>`,
-or by restarting. A custom path works too: `aquawm /path/to/aquawm.lua`.
+number). Saving the file reloads it automatically (inotify watch, works
+with in-place and atomic saves); `Super+Shift+R`, `kill -HUP <aquawm-pid>`
+or a restart reload manually. A custom path works too:
+`aquawm /path/to/aquawm.lua` (its directory is watched instead).
 Missing or broken files fall back to built-in defaults with a log line.
 
 ## Wallpaper

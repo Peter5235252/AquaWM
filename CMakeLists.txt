@@ -173,6 +173,14 @@ target_include_directories(test_rules PRIVATE src)
 target_compile_options(test_rules PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME rules COMMAND test_rules)
 
+# Config-watch filter test (pure logic, no wlroots dependency).
+add_executable(test_configwatch
+  tests/test_configwatch.cpp
+)
+target_include_directories(test_configwatch PRIVATE src)
+target_compile_options(test_configwatch PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME configwatch COMMAND test_configwatch)
+
 # Warning-bar message/layout test (pure logic, no dependencies).
 add_executable(test_warnbar
   tests/test_warnbar.cpp

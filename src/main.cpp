@@ -29,11 +29,14 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <filesystem>
+#include <limits.h>
 #include <linux/input-event-codes.h>
 // pthread.h before the keyword hacks below: glibc declares a C++ cleanup
 // `class` in it, and it can otherwise be first-pulled by a header inside
 // the hack window (seen under -O3), where `class` is macro-renamed.
 #include <pthread.h>
+#include <sys/inotify.h>
 #include <unistd.h>
 #include <wayland-server-core.h>
 #include <xkbcommon/xkbcommon.h>
@@ -84,6 +87,7 @@ extern "C" {
 #include <drm_fourcc.h>
 
 #include "config.hpp"
+#include "configwatch.hpp"
 #include "layers.hpp"
 #include "tiling.hpp"
 #include "wallpaper.hpp"
@@ -285,6 +289,12 @@ struct Server {
     // were already detached in on_backend_destroy, so main() teardown must
     // not remove them again (double wl_list_remove corrupts the list).
     bool backend_gone = false;
+
+    // Config auto-reload (save-and-reload): inotify fd watching the config
+    // directory, debounce timer, and the watched basename.
+    int config_inotify_fd = -1;
+    struct wl_event_source *config_timer = nullptr;
+    std::string config_watch_name;
 
     std::vector<Output *> outputs;
     std::vector<LayerSurface *> layers;
@@ -1378,6 +1388,85 @@ int on_reload_signal(int /*signal_number*/, void *data) {
     return 0;
 }
 
+// Debounced save-and-reload (Hyprland-style): the inotify dispatch arms a
+// one-shot timer; a save burst re-arms it instead of reloading per event.
+int on_config_debounce(void *data) {
+    Server *server = static_cast<Server *>(data);
+    wlr_log(WLR_INFO, "config file saved; reloading %s",
+        server->config_path.c_str());
+    reload_config(server);
+    return 0;
+}
+
+int on_config_inotify(int fd, uint32_t /*mask*/, void *data) {
+    Server *server = static_cast<Server *>(data);
+    alignas(struct inotify_event) char buf[16 * (sizeof(struct inotify_event) + NAME_MAX + 1)];
+    const ssize_t len = read(fd, buf, sizeof(buf));
+    if (len <= 0) {
+        return 0;
+    }
+    bool save_seen = false;
+    for (const char *p = buf; p < buf + len;) {
+        const struct inotify_event *ev =
+            reinterpret_cast<const struct inotify_event *>(p);
+        std::string name = ev->len > 0 ? ev->name : "";
+        if (aquawm::configwatch_should_reload(ev->mask, name,
+                server->config_watch_name)) {
+            save_seen = true;
+        }
+        p += sizeof(struct inotify_event) + ev->len;
+    }
+    if (save_seen && server->config_timer != nullptr) {
+        wl_event_source_timer_update(server->config_timer,
+            aquawm::CONFIG_RELOAD_DEBOUNCE_MS);
+    }
+    return 0;
+}
+
+// Watch the config's parent directory (covers in-place rewrites and atomic
+// save-as-rename alike); failures degrade to manual reload only.
+void setup_config_watch(Server *server, struct wl_event_loop *loop) {
+    namespace fs = std::filesystem;
+    fs::path cfg(server->config_path);
+    fs::path dir = cfg.parent_path();
+    if (dir.empty()) {
+        return;
+    }
+    server->config_inotify_fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+    if (server->config_inotify_fd < 0) {
+        wlr_log(WLR_ERROR, "config watch: inotify unavailable, "
+                "reload on save disabled (SIGHUP still works)");
+        return;
+    }
+    if (inotify_add_watch(server->config_inotify_fd, dir.c_str(),
+            IN_CLOSE_WRITE | IN_MOVED_TO | IN_CREATE) < 0) {
+        wlr_log(WLR_ERROR, "config watch: cannot watch %s, "
+                "reload on save disabled (SIGHUP still works)",
+            dir.c_str());
+        close(server->config_inotify_fd);
+        server->config_inotify_fd = -1;
+        return;
+    }
+    server->config_watch_name = cfg.filename().string();
+    if (wl_event_loop_add_fd(loop, server->config_inotify_fd, WL_EVENT_READABLE,
+            on_config_inotify, server) == nullptr) {
+        wlr_log(WLR_ERROR, "config watch: event source failed, "
+                "reload on save disabled");
+        close(server->config_inotify_fd);
+        server->config_inotify_fd = -1;
+        return;
+    }
+    server->config_timer = wl_event_loop_add_timer(loop, on_config_debounce,
+        server);
+    if (server->config_timer == nullptr) {
+        wlr_log(WLR_ERROR, "config watch: timer failed, "
+                "reload on save disabled");
+        return;
+    }
+    wlr_log(WLR_INFO, "config watch: reloading %s on save",
+        server->config_path.c_str());
+}
+
 void on_keyboard_key(struct wl_listener *listener, void *data) {
     Keyboard *kb = wl_container_of(listener, kb, key);
     Server *server = kb->server;
@@ -2321,6 +2410,9 @@ int main(int argc, char **argv) {
     // SIGHUP reloads the config file without restarting the compositor
     // (Super+Shift+R does the same from the keyboard).
     wl_event_loop_add_signal(loop, SIGHUP, on_reload_signal, &server);
+    // Saving aquawm.lua reloads it automatically (Hyprland-style);
+    // SIGHUP stays as the manual fallback.
+    setup_config_watch(&server, loop);
     server.backend = wlr_backend_autocreate(loop, &server.session);
     if (server.backend == nullptr) {
         std::fprintf(stderr, "aquawm: failed to create backend\n");
@@ -2489,6 +2581,12 @@ int main(int argc, char **argv) {
     wl_list_remove(&server.cursor_events.button.link);
     wl_list_remove(&server.cursor_events.axis.link);
     wl_list_remove(&server.cursor_events.frame.link);
+
+    // Event-loop sources die with the loop; close our own inotify fd.
+    if (server.config_inotify_fd >= 0) {
+        close(server.config_inotify_fd);
+        server.config_inotify_fd = -1;
+    }
 
     wl_display_destroy_clients(server.display);
     wl_display_destroy(server.display);
