@@ -169,6 +169,9 @@ struct XView {
     int applied_w = 0;
     int applied_h = 0;
     bool mapped = false;
+    // Set on first associate: unmap/remap (iconify) preserves the
+    // workspace instead of jumping back to the active one.
+    bool ever_mapped = false;
     struct wl_listener associate{};
     struct wl_listener dissociate{};
     struct wl_listener destroy{};
@@ -763,6 +766,24 @@ bool top_visible(Server *server, AnyView &top) {
     return false;
 }
 
+// top_visible that never hands keyboard focus to override-redirect X
+// popups (tooltips, menus): they must not steal the keyboard on
+// associate/activate, nor become the refocus target when a window closes.
+// Explicit clicks can still focus them via the normal hit-test path.
+bool top_focusable(Server *server, AnyView &top) {
+    for (const AnyView &t : server->tiles) {
+        if (!any_mapped(t) || any_workspace(t) != server->active_workspace) {
+            continue;
+        }
+        if (t.x != nullptr && t.x->xsurface->override_redirect) {
+            continue;
+        }
+        top = t;
+        return true;
+    }
+    return false;
+}
+
 void switch_workspace(Server *server, int ws) {
     if (ws < 0 || ws >= server->config.workspaces ||
         ws == server->active_workspace) {
@@ -824,7 +845,8 @@ void on_view_map(struct wl_listener *listener, void * /*data*/) {
         apply_rules(server, app_id, title, false, view->floating,
             view->workspace);
     }
-    wlr_scene_node_set_enabled(&view->scene_tree->node, true);
+    wlr_scene_node_set_enabled(&view->scene_tree->node,
+        view->workspace == server->active_workspace);
     struct wlr_box geom = view->toplevel->base->geometry;
     wlr_log(WLR_INFO,
         "xdg toplevel mapped: app_id=%s ws=%d tile=(%d,%d) geom=(%d,%d %dx%d)",
@@ -936,7 +958,13 @@ void on_xview_associate(struct wl_listener *listener, void * /*data*/) {
         return;
     }
     xview->mapped = true;
-    xview->workspace = server->active_workspace;
+    // First map lands on the active workspace; remaps (iconify/minimize)
+    // keep their workspace instead of jumping, like xdg unmap does.
+    const bool first_map = !xview->ever_mapped;
+    xview->ever_mapped = true;
+    if (first_map) {
+        xview->workspace = server->active_workspace;
+    }
     {
         const char *cls = aquawm_xwayland_class(xview->xsurface);
         const char *title = aquawm_xwayland_title(xview->xsurface);
@@ -944,10 +972,22 @@ void on_xview_associate(struct wl_listener *listener, void * /*data*/) {
             title != nullptr ? title : "", true, xview->floating,
             xview->workspace);
     }
+    // Override-redirect and fullscreen always float, but a matching rule
+    // floats too (previously update_floating clobbered the rule result).
+    const bool rule_float = xview->floating;
     xview->fullscreen = xview->xsurface->fullscreen;
     xview_update_floating(xview);
+    xview->floating = xview->floating || rule_float;
+    // A rule may target another workspace: don't leak the window visible
+    // on this one until the next workspace switch.
+    wlr_scene_node_set_enabled(&xview->scene_tree->node,
+        xview->workspace == server->active_workspace);
     arrange(server);
-    focus_xview(server, xview);
+    // Menus and tooltips must not steal keyboard focus on map; an explicit
+    // click still focuses them through the hit-test path.
+    if (!xview->xsurface->override_redirect) {
+        focus_xview(server, xview);
+    }
     wlr_log(WLR_INFO, "X11 window associated (title=%s fullscreen=%d)",
         xview->xsurface->title != nullptr ? xview->xsurface->title : "?",
         xview->fullscreen ? 1 : 0);
@@ -963,7 +1003,7 @@ void on_xview_dissociate(struct wl_listener *listener, void * /*data*/) {
     }
     arrange(server);
     AnyView top{};
-    if (top_visible(server, top)) {
+    if (top_focusable(server, top)) {
         focus_any(server, top);
     }
 }
@@ -992,7 +1032,7 @@ void on_xview_destroy(struct wl_listener *listener, void * /*data*/) {
         wlr_seat_keyboard_notify_clear_focus(server->seat);
     }
     AnyView top{};
-    if (top_visible(server, top)) {
+    if (top_focusable(server, top)) {
         focus_any(server, top);
     }
     delete xview;
@@ -1014,17 +1054,31 @@ void on_xview_request_configure(struct wl_listener *listener, void *data) {
         xview->applied_h = event->height;
     }
     // Tiled windows keep the arranged geometry; either way ack so the
-    // client stops waiting. Unmapped surfaces have no size yet.
+    // client stops waiting. Fall back to the live surface size (an
+    // unplaced window has no arranged size yet) instead of a fixed guess.
     if (xview->scene_tree != nullptr) {
+        int w = xview->applied_w > 0 ? xview->applied_w :
+            xview->xsurface->width;
+        int h = xview->applied_h > 0 ? xview->applied_h :
+            xview->xsurface->height;
+        if (w < 1) {
+            w = 640;
+        }
+        if (h < 1) {
+            h = 480;
+        }
         wlr_xwayland_surface_configure(xview->xsurface, xview->x, xview->y,
-            static_cast<uint16_t>(xview->applied_w > 0 ? xview->applied_w : 640),
-            static_cast<uint16_t>(xview->applied_h > 0 ? xview->applied_h : 480));
+            static_cast<uint16_t>(w), static_cast<uint16_t>(h));
     }
 }
 
 void on_xview_request_activate(struct wl_listener *listener, void * /*data*/) {
     XView *xview = wl_container_of(listener, xview, request_activate);
-    focus_xview(xview->server, xview);
+    // Override-redirect popups (tooltips, menus) ask for activation
+    // constantly; granting it would yank keyboard focus off real windows.
+    if (!xview->xsurface->override_redirect) {
+        focus_xview(xview->server, xview);
+    }
 }
 
 void on_xview_request_close(struct wl_listener *listener, void * /*data*/) {
@@ -1633,7 +1687,28 @@ void cursor_process_position(Server *server, uint32_t time_msec) {
         const int dy =
             static_cast<int>(server->cursor->y - server->grab_ly);
         if (server->cursor_mode == CursorMode::Move) {
-            any_set_pos(t, server->grab_vx + dx, server->grab_vy + dy);
+            const int nx = server->grab_vx + dx;
+            const int ny = server->grab_vy + dy;
+            // Compare before any_set_pos overwrites the stored position.
+            const bool moved = t.x == nullptr || nx != t.x->x || ny != t.x->y;
+            any_set_pos(t, nx, ny);
+            // X clients only learn their position through configure, so a
+            // scene-only move snaps back on their next request_configure.
+            if (moved && t.x != nullptr &&
+                t.x->xsurface->surface != nullptr) {
+                int w = t.x->applied_w > 0 ? t.x->applied_w :
+                    t.x->xsurface->width;
+                int h = t.x->applied_h > 0 ? t.x->applied_h :
+                    t.x->xsurface->height;
+                if (w < 1) {
+                    w = 1;
+                }
+                if (h < 1) {
+                    h = 1;
+                }
+                wlr_xwayland_surface_configure(t.x->xsurface, nx, ny,
+                    static_cast<uint16_t>(w), static_cast<uint16_t>(h));
+            }
         } else {
             int w = server->grab_vw + dx;
             int h = server->grab_vh + dy;
