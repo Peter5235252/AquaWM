@@ -367,11 +367,12 @@ NixOS).
 - Phase 3c (done): XWayland support for legacy X11 apps (lazy X server
   start on first X client, shared tiling/focus/float/fullscreen flows;
   override-redirect windows float).
-- Phase 4 (planned): fully programmable Lua API for AquaWM — window
-  rules (match on class/title, float/workspace effects), layout
-  selection per config, event hooks, auto hot-reload on save
-  (inotify) — plus more tiling layouts
-  (master, dwindle, grid, monocle) to choose from.
+- Phase 4 (in progress): auto-tiling milestone DONE — master, dwindle,
+  grid and monocle layouts selectable from Lua (`layout` key, `Super+L`
+  cycles live), dock-on-drop for move drags. Still rough around the
+  edges. Remaining: fully programmable Lua API (window rules matching
+  on class/title with float/workspace effects, event hooks, auto
+  hot-reload on save via inotify).
 - Installer (done): one-liner `setup.sh` plus `install.sh` for Arch,
   Fedora and NixOS, with package manifests and a `--testmode` dry run.
 - Long-term (under consideration): once testing is solid and the core feature set is wrapped up, ditching wlroots and writing a new base from the ground up. No timeline on this, it's just on the table.
