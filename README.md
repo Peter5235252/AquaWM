@@ -1,6 +1,6 @@
 # AquaWM — a tiny tiling Wayland compositor in C++ (wlroots 0.20)
 
-Built and tested on Fedora 44 under WSL2 / WSLg, but it should run on any
+Built and tested on Fedora 44 under WSL2 / WSLg plus NixOS on real hardware, but it should run on any
 Linux with wlroots 0.20: nested under another Wayland/X11 session for
 development, or on DRM/KMS on real hardware.
 
