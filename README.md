@@ -1,4 +1,4 @@
-# AquaWM — a tiny tiling Wayland compositor in C++ (wlroots 0.20)
+# AquaWM — a tiling Wayland compositor in C++ (wlroots 0.20)
 
 Developed and tested on NixOS on real hardware — bare metal on both
 Intel (ThinkPad T480) and NVIDIA (GTX 1660 Super) graphics. Nested
