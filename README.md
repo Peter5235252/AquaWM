@@ -1,5 +1,12 @@
 # AquaWM — a tiling Wayland compositor in C++ (wlroots 0.20)
 
+> Honest status: this is a **hobby project**, developed almost
+> entirely by an AI coding agent under the owner's direction. It runs
+> on real hardware and gets better in bursts, but it will likely never
+> be entirely "daily driver ready" — expect sharp edges, missing
+> protocols, and fixes that arrive when they arrive. Use it to tinker,
+> not to depend on.
+
 Developed and tested on NixOS on real hardware — bare metal on both
 Intel (ThinkPad T480) and NVIDIA (GTX 1660 Super) graphics. Nested
 sessions under another Wayland/X11 compositor (including WSLg) work
@@ -434,7 +441,7 @@ NixOS).
 
 ## Distro support, now and later
 
-AquaWM is developed and tested on **NixOS first** — it installs and builds through the flake, runs on real hardware, and is where active development happens. Expect occasional rough edges as it matures fast.
+AquaWM is developed and tested on **NixOS first** — it installs and builds through the flake, runs on real hardware, and is where active development happens. It is still a hobby project: expect rough edges, unimplemented protocols, and development in bursts rather than a march toward daily-driver readiness.
 
 **Arch Linux and Fedora** are supported, with every dependency available
 from the official repositories — no AUR, no COPR needed — but neither
