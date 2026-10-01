@@ -146,6 +146,10 @@ struct View {
     int x = 0;
     int y = 0;
     bool floating = false;
+    bool fullscreen = false;
+    // Rule result at map time: fullscreen floats on top of this without
+    // clobbering it, and exiting fullscreen restores it.
+    bool rule_float = false;
     int workspace = 0;
     int applied_w = 0;
     int applied_h = 0;
@@ -154,6 +158,8 @@ struct View {
     struct wl_listener unmap{};
     struct wl_listener commit{};
     struct wl_listener destroy{};
+    struct wl_listener request_fullscreen{};
+    struct wl_listener request_maximize{};
 };
 
 // X11 window (Phase 3c): same tiling state as View, driven by
@@ -332,6 +338,8 @@ struct Server {
 
 void focus_view(Server *server, View *view);
 void focus_xview(Server *server, XView *xview);
+void on_view_request_fullscreen(struct wl_listener *listener, void *data);
+void on_view_request_maximize(struct wl_listener *listener, void *data);
 void drop_wallpaper(Server *server);
 void arrange(Server *server);
 void arrange_layers(Server *server);
@@ -407,12 +415,16 @@ void any_set_floating(const AnyView &t, bool floating) {
 }
 
 bool any_fullscreen(const AnyView &t) {
-    return t.x != nullptr && t.x->fullscreen;
+    return (t.x != nullptr && t.x->fullscreen) ||
+        (t.v != nullptr && t.v->fullscreen);
 }
 
 void any_set_fullscreen(const AnyView &t, bool fullscreen) {
     if (t.x != nullptr) {
         t.x->fullscreen = fullscreen;
+    }
+    if (t.v != nullptr) {
+        t.v->fullscreen = fullscreen;
     }
 }
 
@@ -645,7 +657,7 @@ bool tile_at(Server *server, double lx, double ly, AnyView &hit,
 // master-stack layout. Oldest window becomes master for a stable layout.
 // Tiling fills the output's usable area (full box minus layer-shell
 // exclusive zones, see arrange_layers), then applies gaps. A mapped
-// fullscreen X11 window covers the whole usable area instead.
+// fullscreen window (native or X11) covers the whole usable area instead.
 void arrange(Server *server) {
     if (server->outputs.empty()) {
         return;
@@ -851,6 +863,7 @@ void on_view_map(struct wl_listener *listener, void * /*data*/) {
         apply_rules(server, app_id, title, false, view->floating,
             view->workspace);
     }
+    view->rule_float = view->floating;
     wlr_scene_node_set_enabled(&view->scene_tree->node,
         view->workspace == server->active_workspace);
     struct wlr_box geom = view->toplevel->base->geometry;
@@ -903,6 +916,8 @@ void on_view_destroy(struct wl_listener *listener, void * /*data*/) {
     wl_list_remove(&view->unmap.link);
     wl_list_remove(&view->commit.link);
     wl_list_remove(&view->destroy.link);
+    wl_list_remove(&view->request_fullscreen.link);
+    wl_list_remove(&view->request_maximize.link);
     any_remove_tile(server, AnyView{view, nullptr});
     arrange(server);
     // The toplevel is going away: never let it keep keyboard focus, and
@@ -939,8 +954,42 @@ void on_new_toplevel(struct wl_listener *listener, void *data) {
     wl_signal_add(&toplevel->base->surface->events.commit, &view->commit);
     view->destroy.notify = on_view_destroy;
     wl_signal_add(&toplevel->events.destroy, &view->destroy);
+    view->request_fullscreen.notify = on_view_request_fullscreen;
+    wl_signal_add(&toplevel->events.request_fullscreen,
+        &view->request_fullscreen);
+    view->request_maximize.notify = on_view_request_maximize;
+    wl_signal_add(&toplevel->events.request_maximize,
+        &view->request_maximize);
 
     server->tiles.push_back(AnyView{view, nullptr});
+}
+
+// Fullscreen native windows float above tiling (same as X11); exiting
+// fullscreen restores the rule float instead of forcing tiled.
+void view_update_floating(View *view) {
+    view->floating = view->fullscreen || view->rule_float;
+}
+
+void on_view_request_fullscreen(struct wl_listener *listener, void * /*data*/) {
+    View *view = wl_container_of(listener, view, request_fullscreen);
+    Server *server = view->server;
+    // wlroots 0.20 passes no payload; the client wish is in requested.
+    const bool fullscreen = view->toplevel->requested.fullscreen;
+    view->fullscreen = fullscreen;
+    view_update_floating(view);
+    wlr_xdg_toplevel_set_fullscreen(view->toplevel, fullscreen);
+    arrange(server);
+    if (fullscreen) {
+        focus_view(server, view);
+    }
+}
+
+void on_view_request_maximize(struct wl_listener *listener, void * /*data*/) {
+    View *view = wl_container_of(listener, view, request_maximize);
+    // Tiling-compositor policy: acknowledge the state but keep the window
+    // in layout (Sway behaves the same); fullscreen is the covering state.
+    wlr_xdg_toplevel_set_maximized(view->toplevel,
+        view->toplevel->requested.maximized);
 }
 
 // --- X11 windows (Phase 3c) ----------------------------------------------
