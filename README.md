@@ -426,7 +426,7 @@ NixOS).
   output (`outputs.front()`), Arch/Fedora install paths untested.
 - Installer (done): one-liner `setup.sh` plus `install.sh` for Arch,
   Fedora and NixOS, with package manifests and a `--testmode` dry run.
-- Long-term (not planned): a ground-up rewrite without wlroots is
+- Important: A ground-up rewrite without wlroots is
   incredibly unlikely — ~4,200 lines of AquaWM rest on ~150k lines of
   modesetting/rendering/protocol machinery, and rebuilding parity
   would cost years to arrive back where we already are. Off the table
