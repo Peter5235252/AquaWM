@@ -426,7 +426,11 @@ NixOS).
   output (`outputs.front()`), Arch/Fedora install paths untested.
 - Installer (done): one-liner `setup.sh` plus `install.sh` for Arch,
   Fedora and NixOS, with package manifests and a `--testmode` dry run.
-- Long-term (under consideration): once testing is solid and the core feature set is wrapped up, ditching wlroots and writing a new base from the ground up. No timeline on this, it's just on the table.
+- Long-term (not planned): a ground-up rewrite without wlroots is
+  incredibly unlikely — ~4,200 lines of AquaWM rest on ~150k lines of
+  modesetting/rendering/protocol machinery, and rebuilding parity
+  would cost years to arrive back where we already are. Off the table
+  unless wlroots actively blocks something we need.
 
 ## Distro support, now and later
 
