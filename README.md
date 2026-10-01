@@ -398,19 +398,32 @@ NixOS).
 - Phase 3c (done): XWayland support for legacy X11 apps (lazy X server
   start on first X client, shared tiling/focus/float/fullscreen flows;
   override-redirect windows float).
-- Phase 4 (in progress): auto-tiling milestone DONE — master, dwindle,
-  grid and monocle layouts selectable from Lua (`layout` key, `Super+L`
-  cycles live), dock-on-drop for move drags. Still rough around the
-  edges. Remaining: fully programmable Lua API (window rules matching
-  on class/title with float/workspace effects, event hooks, auto
-  hot-reload on save via inotify).
-- Phase 5 (planned): client-compat hardening — honor xdg size hints so
-  Firefox and friends confine to their tiles, XWayland fixes (rule
-  float preserved on associate, no focus stealing by override-redirect
-  popups, workspace preserved across unmap/remap).
-- Phase 6 (planned): outputs and input — per-output mode
-  (resolution/refresh rate) from Lua, VRR (`0` off, `1` always,
-  `2` fullscreen-only), keyboard layouts with runtime switching.
+- Phase 4 (done): auto-tiling milestone — master, dwindle, grid and
+  monocle layouts selectable from Lua (`layout` key, `Super+L` cycles
+  live), dock-on-drop for move drags, window rules v1 (match on
+  class/title with float/workspace effects), auto hot-reload on save
+  via inotify.
+- Phase 5 (done): client-compat hardening — xdg size hints honored so
+  Firefox confines to its tile; XWayland fixes (rule float preserved
+  on associate, no focus stealing by override-redirect popups,
+  workspace preserved across unmap/remap, interactive move configures
+  the client, live-size configure fallback).
+- Phase 6 (done): outputs and input — per-output mode
+  (resolution/refresh rate) from Lua with driver-listed modes
+  preferred over synthetic custom ones (NVIDIA rejects custom modes),
+  VRR (`0` off, `1` always, `2` fullscreen-only), keyboard layouts
+  with runtime switching, and a working clipboard (data-control
+  protocol plus accepting selection requests, which also fixes
+  app-to-app copy/paste).
+- Phase 7 (planned): pure-Lua config — replace the fixed-schema
+  `config = {...}` DSL with a real `aquawm` module API so user code
+  drives (Lua closures for keybinds, predicate functions for rules,
+  event hooks, state queries like connected outputs). First sub-item:
+  drag-and-drop (`request_start_drag` is currently unhandled, same
+  bug class as clipboard was).
+- Known gaps (not yet scheduled): layer-shell bar input is not
+  forwarded (clicking waybar does nothing), tiling assumes a single
+  output (`outputs.front()`), Arch/Fedora install paths untested.
 - Installer (done): one-liner `setup.sh` plus `install.sh` for Arch,
   Fedora and NixOS, with package manifests and a `--testmode` dry run.
 - Long-term (under consideration): once testing is solid and the core feature set is wrapped up, ditching wlroots and writing a new base from the ground up. No timeline on this, it's just on the table.
