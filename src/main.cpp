@@ -864,6 +864,14 @@ void on_view_map(struct wl_listener *listener, void * /*data*/) {
             view->workspace);
     }
     view->rule_float = view->floating;
+    // Advertise exactly what we answer (map time: configuring before the
+    // first commit trips a wlroots assertion). Clients like Firefox
+    // withhold fullscreen/maximize requests when the capability is
+    // absent, so without this F11 died in the client and never reached
+    // request_fullscreen.
+    wlr_xdg_toplevel_set_wm_capabilities(view->toplevel,
+        WLR_XDG_TOPLEVEL_WM_CAPABILITIES_FULLSCREEN |
+        WLR_XDG_TOPLEVEL_WM_CAPABILITIES_MAXIMIZE);
     wlr_scene_node_set_enabled(&view->scene_tree->node,
         view->workspace == server->active_workspace);
     struct wlr_box geom = view->toplevel->base->geometry;
