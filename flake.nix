@@ -94,7 +94,8 @@
             # names via CMake.
             postInstall = ''
               wrapProgram $out/bin/aquawm-session \
-                --prefix PATH : $out/bin
+                --prefix PATH : $out/bin \
+                --prefix PATH : ${pkgs.polkit_gnome}/libexec
               # NOTE: TryExec first — plain 'Exec=' is a substring of it.
               substituteInPlace $out/share/wayland-sessions/aquawm.desktop \
                 --replace-fail 'TryExec=aquawm-session' "TryExec=$out/bin/aquawm-session" \

@@ -27,4 +27,25 @@ fi
 # screen with no trace. Overwritten on every login (last session only).
 logdir="${XDG_DATA_HOME:-$HOME/.local/share}/aquawm"
 mkdir -p "$logdir" 2>/dev/null
+
+# Polkit authentication agent (graphical pkexec approval): bare sessions
+# start no agent, so pkexec falls back to a textual prompt that has no
+# terminal here. Launch once the compositor socket exists (the DM
+# environment has no WAYLAND_DISPLAY yet; the compositor takes the first
+# free socket). Best-effort and silent when the agent binary is absent
+# (distros without polkit-gnome, or DEs shipping their own agent).
+if command -v polkit-gnome-authentication-agent-1 >/dev/null 2>&1; then
+    (
+        uid_runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+        disp="${WAYLAND_DISPLAY:-wayland-0}"
+        for _ in $(seq 1 100); do
+            if [ -S "$uid_runtime/$disp" ]; then
+                WAYLAND_DISPLAY="$disp" \
+                    exec polkit-gnome-authentication-agent-1 >/dev/null 2>&1
+            fi
+            sleep 0.2
+        done
+    ) &
+fi
+
 exec aquawm "$@" 2>"$logdir/session.log"
