@@ -108,7 +108,7 @@
 
             meta = with nixpkgs.lib; {
               description = "Minimal tiling Wayland compositor in C++ (wlroots 0.20, Lua config)";
-              license = licenses.mit;
+              license = licenses.asl20;
               platforms = platforms.linux;
             };
           };
